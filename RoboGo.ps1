@@ -486,3 +486,176 @@ function Get-RoboVerdict {
     }
     return @{ Level = 'ok'; Text = ("Nothing to copy, the destination is already up to date. $detail").Trim() }
 }
+
+# ============================================================================
+# 3. Engine: start robocopy hidden, follow its log file, stop it.
+#    Progress comes from a /UNILOG file because that is real UTF-16. Robocopy's
+#    piped output is OEM code page text and turns many characters into "?".
+# ============================================================================
+
+function Get-RoboLogDir {
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) 'RoboGo'
+    if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+    return $dir
+}
+
+function New-RoboLogPath {
+    param([string]$Kind)
+    $stamp = [DateTime]::Now.ToString('yyyyMMdd-HHmmss-fff', $script:Inv)
+    return (Join-Path (Get-RoboLogDir) ($stamp + '-' + $Kind.ToLowerInvariant() + '.log'))
+}
+
+function Remove-RoboOldLogs {
+    # Keeps the newest log files and deletes the rest.
+    param([int]$Keep = 20)
+    $files = @(Get-ChildItem -LiteralPath (Get-RoboLogDir) -Filter '*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+    for ($i = $Keep; $i -lt $files.Count; $i++) {
+        Remove-Item -LiteralPath $files[$i].FullName -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Start-RoboJob {
+    # Starts robocopy without a window. Kind is Run, Scan or DryRun. Returns the job that
+    # Read-RoboJob polls.
+    param($Options, [ValidateSet('Run', 'Scan', 'DryRun')][string]$Kind)
+    $log = New-RoboLogPath $Kind
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $script:RoboExe
+    $info.Arguments = Get-RoboArguments $Options $Kind $log
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $process = [System.Diagnostics.Process]::Start($info)
+    return @{
+        Kind      = $Kind
+        Process   = $process
+        Arguments = $info.Arguments
+        LogPath   = $log
+        Stream    = $null
+        Decoder   = [System.Text.Encoding]::Unicode.GetDecoder()
+        Buffer    = (New-Object 'byte[]' 262144)
+        Chars     = (New-Object 'char[]' 262144)
+        Rest      = ''
+        First     = $true
+        State     = (New-RoboProgress -Threads ([int]$Options.Threads) -DestinationPath $Options.Destination)
+        Done      = $false
+        ExitCode  = $null
+    }
+}
+
+function Read-RoboJob {
+    # Reads what robocopy appended to its log since the last call and updates Job.State.
+    # Returns the new lines worth showing (blank lines and bare percent updates removed).
+    # Sets Job.Done and Job.ExitCode once robocopy has exited and the log is fully read.
+    # BudgetMs caps the time spent per call so the window stays responsive on huge logs.
+    param([hashtable]$Job, [int]$BudgetMs = 120)
+    $display = New-Object System.Collections.Generic.List[string]
+    if ($Job.Done) { return , $display.ToArray() }
+    # Ask before reading: if robocopy has already exited, this read sees everything it wrote.
+    $exited = $Job.Process.HasExited
+    if (($null -eq $Job.Stream) -and (Test-Path -LiteralPath $Job.LogPath)) {
+        try {
+            $Job.Stream = New-Object System.IO.FileStream($Job.LogPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, ([System.IO.FileShare]'ReadWrite, Delete'))
+        }
+        catch {
+            $Job.Stream = $null
+        }
+    }
+    $drained = $true
+    if ($null -ne $Job.Stream) {
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
+        while ($true) {
+            $count = $Job.Stream.Read($Job.Buffer, 0, $Job.Buffer.Length)
+            if ($count -le 0) { break }
+            $chars = $Job.Decoder.GetChars($Job.Buffer, 0, $count, $Job.Chars, 0)
+            $text = $Job.Rest + [string]::new($Job.Chars, 0, $chars)
+            if ($Job.First) {
+                $text = $text.TrimStart([char]0xFEFF)
+                $Job.First = $false
+            }
+            $split = Split-RoboLogText $text
+            $Job.Rest = $split.Rest
+            if ($split.Lines.Length -gt 0) {
+                Update-RoboProgress -State $Job.State -Lines $split.Lines
+                foreach ($line in $split.Lines) {
+                    $trimmed = $line.Trim()
+                    if ($trimmed.Length -eq 0) { continue }
+                    if ($trimmed.EndsWith('%') -and ([int]$line[0] -ne 9)) { continue }
+                    $display.Add($line)
+                }
+            }
+            if ((-not $exited) -and ($clock.ElapsedMilliseconds -ge $BudgetMs)) {
+                $drained = $false
+                break
+            }
+        }
+    }
+    if ($exited -and $drained) {
+        if ($Job.Rest.Trim() -ne '') {
+            Update-RoboProgress -State $Job.State -Lines @($Job.Rest)
+            $display.Add($Job.Rest)
+        }
+        $Job.Rest = ''
+        $Job.Process.WaitForExit()
+        $Job.ExitCode = $Job.Process.ExitCode
+        if ($null -ne $Job.Stream) {
+            $Job.Stream.Dispose()
+            $Job.Stream = $null
+        }
+        $Job.Done = $true
+    }
+    return , $display.ToArray()
+}
+
+function Stop-RoboJob {
+    # Kills robocopy. Files already copied stay where they are.
+    param([hashtable]$Job)
+    try {
+        if (-not $Job.Process.HasExited) {
+            $Job.Process.Kill()
+            [void]$Job.Process.WaitForExit(3000)
+        }
+    }
+    catch { }
+}
+
+function Wait-RoboJob {
+    # Polls a job to its end and returns every display line. The window does the same from
+    # a timer; this blocking version is for the tests and the self-test.
+    param([hashtable]$Job, [int]$TimeoutSec = 600, [scriptblock]$OnTick)
+    $all = New-Object System.Collections.Generic.List[string]
+    $clock = [System.Diagnostics.Stopwatch]::StartNew()
+    while (-not $Job.Done) {
+        foreach ($line in (Read-RoboJob $Job)) { $all.Add($line) }
+        if ($OnTick) { & $OnTick $Job }
+        if ($Job.Done) { break }
+        if ($clock.Elapsed.TotalSeconds -gt $TimeoutSec) {
+            Stop-RoboJob $Job
+            throw 'The robocopy job did not finish in time.'
+        }
+        Start-Sleep -Milliseconds 50
+    }
+    return , $all.ToArray()
+}
+
+function New-RoboSpeedMeter {
+    return @{ Samples = (New-Object System.Collections.Generic.List[object]); WindowSec = 5.0 }
+}
+
+function Add-RoboSpeedSample {
+    # Records "Bytes done at Seconds" and forgets samples older than the window.
+    param($Meter, [double]$Bytes, [double]$Seconds)
+    $Meter.Samples.Add(@{ Time = $Seconds; Bytes = $Bytes })
+    while (($Meter.Samples.Count -gt 2) -and (($Seconds - $Meter.Samples[0].Time) -gt $Meter.WindowSec)) {
+        $Meter.Samples.RemoveAt(0)
+    }
+}
+
+function Get-RoboSpeed {
+    # Bytes per second between the oldest and the newest sample in the window.
+    param($Meter)
+    $n = $Meter.Samples.Count
+    if ($n -lt 2) { return 0.0 }
+    $span = $Meter.Samples[$n - 1].Time - $Meter.Samples[0].Time
+    if ($span -le 0) { return 0.0 }
+    return [math]::Max(0.0, ($Meter.Samples[$n - 1].Bytes - $Meter.Samples[0].Bytes) / $span)
+}
