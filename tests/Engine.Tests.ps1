@@ -14,6 +14,23 @@ Assert-Equal 1500 (Get-RoboSpeed $m) 'speed: bytes per second over the window'
 Add-RoboSpeedSample $m 3000 20
 Assert-Equal 0 (Get-RoboSpeed $m) 'speed: drops to zero when nothing moves'
 
+# --- log housekeeping ---
+$logDir = Join-Path ([System.IO.Path]::GetTempPath()) ('RoboGoLogTest-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+try {
+    foreach ($i in 1..5) {
+        $file = Join-Path $logDir ('job' + $i + '.log')
+        Set-Content -LiteralPath $file -Value 'x'
+        (Get-Item -LiteralPath $file).LastWriteTime = (Get-Date).AddMinutes(-$i)
+    }
+    Set-Content -LiteralPath (Join-Path $logDir 'notes.txt') -Value 'x'
+    Remove-RoboOldLogs -Keep 2 -Directory $logDir
+    Assert-Equal 'job1.log|job2.log|notes.txt' ((Get-ChildItem -LiteralPath $logDir | Sort-Object Name | ForEach-Object { $_.Name }) -join '|') 'logs: only the newest log files are kept, other files are left alone'
+}
+finally {
+    Remove-Item -LiteralPath $logDir -Recurse -Force
+}
+
 # --- helpers ---
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ('RoboGoTest-' + [guid]::NewGuid().ToString('N'))
 # "zazolc" with its Polish diacritics plus one CJK character that OEM code page 852 cannot hold

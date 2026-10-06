@@ -506,9 +506,11 @@ function New-RoboLogPath {
 }
 
 function Remove-RoboOldLogs {
-    # Keeps the newest log files and deletes the rest.
-    param([int]$Keep = 20)
-    $files = @(Get-ChildItem -LiteralPath (Get-RoboLogDir) -Filter '*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
+    # Keeps the newest log files in the log folder and deletes the rest. CmdletBinding makes
+    # a mistyped parameter an error instead of a silent run against the default folder.
+    [CmdletBinding()]
+    param([int]$Keep = 20, [string]$Directory = (Get-RoboLogDir))
+    $files = @(Get-ChildItem -LiteralPath $Directory -Filter '*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
     for ($i = $Keep; $i -lt $files.Count; $i++) {
         Remove-Item -LiteralPath $files[$i].FullName -Force -ErrorAction SilentlyContinue
     }
@@ -1219,17 +1221,26 @@ function Update-RoboGoPreview {
     # Rebuilds the coloured command, the mode hint and the problem line from the fields.
     $ui = $script:RoboGo.UI
     $options = Get-RoboGoOptions $ui
-    # One element per token: the WrapPanel moves whole tokens to the next line, so a switch
-    # is never split in the middle. Only a token longer than the line (a long path) wraps.
+    # The tape is a WrapPanel of small text pieces, so lines break only between pieces.
+    # A switch is one piece and is never split in the middle. A path is cut into one piece
+    # per folder, so a long path breaks after a backslash and still reads top to bottom.
     $ui.CmdPanel.Children.Clear()
     foreach ($part in (Get-RoboCommandParts $options)) {
-        $token = New-Object System.Windows.Controls.TextBlock
-        $token.Text = $part.Text
-        $token.FontSize = 13.5
-        $token.TextWrapping = 'Wrap'
-        $token.Margin = New-Object System.Windows.Thickness (0, 1, 9, 1)
-        $token.Foreground = $ui.Window.FindResource($script:RoboGoPartBrush[$part.Kind])
-        [void]$ui.CmdPanel.Children.Add($token)
+        $brush = $ui.Window.FindResource($script:RoboGoPartBrush[$part.Kind])
+        $pieces = @($part.Text)
+        if ($part.Kind -eq 'path') { $pieces = @([regex]::Split($part.Text, '(?<=\\)') | Where-Object { $_ -ne '' }) }
+        for ($i = 0; $i -lt $pieces.Count; $i++) {
+            $piece = New-Object System.Windows.Controls.TextBlock
+            $piece.Text = $pieces[$i]
+            $piece.FontSize = 13.5
+            $piece.TextWrapping = 'Wrap'
+            $piece.Foreground = $brush
+            # only the last piece of a token is followed by a gap
+            $gap = 0
+            if ($i -eq ($pieces.Count - 1)) { $gap = 9 }
+            $piece.Margin = New-Object System.Windows.Thickness (0, 1, $gap, 1)
+            [void]$ui.CmdPanel.Children.Add($piece)
+        }
     }
     $danger = Get-RoboDanger $options
     if ($danger -ne '') {
@@ -1536,7 +1547,8 @@ function Select-RoboFolder {
 }
 
 function Set-RoboDarkTitleBar {
-    # Asks Windows for a dark title bar (DWMWA_USE_IMMERSIVE_DARK_MODE). Cosmetic only.
+    # Dark title bar (DWMWA_USE_IMMERSIVE_DARK_MODE), and on Windows 11 the caption, its
+    # text and the border in the colours of the window itself. Cosmetic only.
     param($Window)
     try {
         if (-not ('RoboGo.Dwm' -as [type])) {
@@ -1545,6 +1557,14 @@ function Set-RoboDarkTitleBar {
         $handle = (New-Object System.Windows.Interop.WindowInteropHelper $Window).EnsureHandle()
         $on = 1
         [void][RoboGo.Dwm]::DwmSetWindowAttribute($handle, 20, [ref]$on, 4)
+        # 35 caption, 36 caption text, 34 border. A COLORREF is 0x00BBGGRR. Without these an
+        # accent-coloured title bar would sit on top of the dark window. Windows 10 ignores them.
+        $caption = 0x000E0C0B
+        $captionText = 0x00E1E6E8
+        $border = 0x00342E2A
+        [void][RoboGo.Dwm]::DwmSetWindowAttribute($handle, 35, [ref]$caption, 4)
+        [void][RoboGo.Dwm]::DwmSetWindowAttribute($handle, 36, [ref]$captionText, 4)
+        [void][RoboGo.Dwm]::DwmSetWindowAttribute($handle, 34, [ref]$border, 4)
     }
     catch { }
 }

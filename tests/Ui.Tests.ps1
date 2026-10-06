@@ -6,8 +6,14 @@ $app = Join-Path $PSScriptRoot '..\RoboGo.ps1'
 . $app -NoUI
 
 function Get-CommandText {
+    # Rebuilds the command from the tape: a piece with a right margin ends a token.
     param($UI)
-    return ((@($UI.CmdPanel.Children) | ForEach-Object { $_.Text }) -join ' ')
+    $text = ''
+    foreach ($piece in @($UI.CmdPanel.Children)) {
+        $text += $piece.Text
+        if ($piece.Margin.Right -gt 0) { $text += ' ' }
+    }
+    return $text.Trim()
 }
 function Save-WindowPng {
     # Renders the window content to a PNG file. WPF suspends layout below a window that was
@@ -83,7 +89,8 @@ try {
     $ui.TxtDest.Text = 'D:\'
     Assert-Equal 'robocopy "C:\src dir" D:\ /E /MT:8 /R:2 /W:5 /XJ' (Get-CommandText $ui) 'preview: follows the path fields'
     Assert-Equal 'Collapsed' $ui.TxtProblem.Visibility 'preview: no problem for valid input'
-    Assert-Equal 8 $ui.CmdPanel.Children.Count 'preview: every token is its own element, so a switch is never split across lines'
+    $pieces = @($ui.CmdPanel.Children | ForEach-Object { $_.Text })
+    Assert-Equal 'robocopy|"C:\|src dir"|D:\|/E|/MT:8|/R:2|/W:5|/XJ' ($pieces -join '|') 'preview: a switch is one unbreakable piece, a path may break after a backslash'
     $ui.ChkJunction.IsChecked = $false
     $ui.TxtXF.Text = '*.tmp'
     Assert-Equal 'robocopy "C:\src dir" D:\ /E /MT:8 /R:2 /W:5 /XF *.tmp' (Get-CommandText $ui) 'preview: follows check boxes and lists'
@@ -106,6 +113,19 @@ try {
     $ui.TxtXF.Text = '*.tmp; thumbs.db'
     Save-WindowPng $ui (Join-Path $shots 'ui-mirror.png')
     Assert-Rendered (Join-Path $shots 'ui-mirror.png') 'render: the mirror state is drawn'
+
+    # --- hiding and showing the log (the window is shown off screen since the render) ---
+    $tall = $ui.Window.ActualHeight
+    Switch-RoboGoLog
+    $ui.Window.UpdateLayout()
+    Assert-Equal 'Collapsed' $ui.TxtLog.Visibility 'log: HIDE LOG collapses the log box'
+    Assert-Equal 'SHOW LOG' $ui.BtnToggleLog.Content 'log: the button offers to show it again'
+    Assert-True ($ui.Window.ActualHeight -lt ($tall - 50)) 'log: the window shrinks to what is left'
+    Switch-RoboGoLog
+    $ui.Window.UpdateLayout()
+    Assert-Equal 'Visible' $ui.TxtLog.Visibility 'log: SHOW LOG brings the box back'
+    Assert-Equal 'HIDE LOG' $ui.BtnToggleLog.Content 'log: the button offers to hide it again'
+    Assert-Equal $tall $ui.Window.ActualHeight 'log: the window gets its height back'
     $ui.RbCopy.IsChecked = $true
     $ui.TxtXF.Text = ''
     Assert-Equal 'True' $ui.ChkSub.IsEnabled 'mode: copy unlocks the subfolders box'
