@@ -1,7 +1,7 @@
 # RoboGo design
 
 - Date: 2026-10-06
-- Status: design approved in chat by Czak; this file records it plus what the probes on the target machine showed.
+- Status: design approved in chat by Czak; this file records it plus what the probes on the target machine showed. Implemented on the same day, see the plan and its execution notes.
 - Repo: `C:\Users\user\GitHub\RoboGo`
 
 ## Goal
@@ -48,9 +48,9 @@ Machine: legion-slim, Windows 11 Pro, culture pl-PL, PowerShell 7.6.6 and 5.1, .
 | `tests/Core.Tests.ps1` | Paths, quoting, command line, validation, formatting. |
 | `tests/Parser.Tests.ps1` | Log parser, line splitter, verdict, using lines captured by the probes. |
 | `tests/Engine.Tests.ps1` | Real robocopy runs in a temp folder: scan, run, multi-thread, mirror, failure, cancel. |
-| `tests/Ui.Tests.ps1` | Loads the window hidden, drives it, runs a real copy through the controller, renders PNGs. |
+| `tests/Ui.Tests.ps1` | Loads the window, drives it, runs real copies through the controller, renders PNGs. Shown only far off screen. |
 | `tests/Run-Tests.ps1` | Runs every suite in its own process of the current host. |
-| `tests/Launcher.Smoke.ps1` | Starts `RoboGo.cmd`, waits for the real window, closes it. |
+| `tests/Launcher.Smoke.ps1` | Starts `RoboGo.cmd`, drives a dry run and a copy in the real window through UI Automation, saves a picture, closes it. |
 
 `RoboGo.ps1 -NoUI` only defines functions (tests dot-source it). `RoboGo.ps1 -SelfTest` runs a few built-in checks and loads the window without showing it.
 
