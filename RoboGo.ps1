@@ -659,3 +659,1071 @@ function Get-RoboSpeed {
     if ($span -le 0) { return 0.0 }
     return [math]::Max(0.0, ($Meter.Samples[$n - 1].Bytes - $Meter.Samples[0].Bytes) / $span)
 }
+
+# ============================================================================
+# 4. Window. Look: an instrument panel. Near-black, one amber accent, red only
+#    for things that delete, monospace type because the subject is a command.
+# ============================================================================
+
+$script:RoboGoControls = @(
+    'Root', 'TxtVersion', 'TxtSource', 'BtnSource', 'TxtDest', 'BtnDest',
+    'RbCopy', 'RbMirror', 'RbMove', 'TxtModeHint', 'ChkSub', 'ChkJunction', 'ChkNewer', 'ChkRestart',
+    'TxtThreads', 'TxtRetries', 'TxtWait', 'TxtXF', 'TxtXD', 'TxtExtra',
+    'BtnCopyCmd', 'TapeEdge', 'CmdPanel', 'TxtProblem', 'ChkScan', 'BtnDry', 'BtnRun', 'BtnCancel',
+    'BtnToggleLog', 'BtnOpenLog', 'Bar', 'TxtPercent', 'TxtFiles', 'TxtData', 'TxtSpeed', 'LblEta', 'TxtEta',
+    'TxtCurrent', 'TxtStatus', 'TxtLog'
+)
+# Controls that are locked while a job runs.
+$script:RoboGoInputs = @(
+    'TxtSource', 'BtnSource', 'TxtDest', 'BtnDest', 'RbCopy', 'RbMirror', 'RbMove',
+    'ChkSub', 'ChkJunction', 'ChkNewer', 'ChkRestart', 'TxtThreads', 'TxtRetries', 'TxtWait',
+    'TxtXF', 'TxtXD', 'TxtExtra', 'ChkScan', 'BtnDry', 'BtnRun'
+)
+$script:RoboGoPartBrush = @{ 'exe' = 'Dim'; 'path' = 'Ink'; 'switch' = 'Amber'; 'danger' = 'Danger'; 'value' = 'Ink' }
+$script:RoboGo = $null
+
+function Get-RoboGoXaml {
+    return @'
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="RoboGo" Width="900" Height="860" MinWidth="780" MinHeight="680"
+        WindowStartupLocation="CenterScreen" Background="#0B0C0E" Foreground="#E8E6E1"
+        FontFamily="Cascadia Mono, Cascadia Code, Consolas" FontSize="12.5"
+        UseLayoutRounding="True" SnapsToDevicePixels="True">
+  <Window.Resources>
+    <SolidColorBrush x:Key="Bg0" Color="#0B0C0E"/>
+    <SolidColorBrush x:Key="Bg1" Color="#131518"/>
+    <SolidColorBrush x:Key="Bg2" Color="#1B1E22"/>
+    <SolidColorBrush x:Key="Line" Color="#2A2E34"/>
+    <SolidColorBrush x:Key="Ink" Color="#E8E6E1"/>
+    <SolidColorBrush x:Key="Dim" Color="#8A8D91"/>
+    <SolidColorBrush x:Key="Amber" Color="#FFB000"/>
+    <SolidColorBrush x:Key="Danger" Color="#FF4D3D"/>
+    <SolidColorBrush x:Key="Ok" Color="#6BD968"/>
+    <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="#0B0C0E"/>
+    <LinearGradientBrush x:Key="SegOn" MappingMode="Absolute" SpreadMethod="Repeat" StartPoint="0,0" EndPoint="9,0">
+      <GradientStop Color="#FFB000" Offset="0"/>
+      <GradientStop Color="#FFB000" Offset="0.667"/>
+      <GradientStop Color="#00FFB000" Offset="0.667"/>
+      <GradientStop Color="#00FFB000" Offset="1"/>
+    </LinearGradientBrush>
+    <LinearGradientBrush x:Key="SegOff" MappingMode="Absolute" SpreadMethod="Repeat" StartPoint="0,0" EndPoint="9,0">
+      <GradientStop Color="#24282D" Offset="0"/>
+      <GradientStop Color="#24282D" Offset="0.667"/>
+      <GradientStop Color="#0024282D" Offset="0.667"/>
+      <GradientStop Color="#0024282D" Offset="1"/>
+    </LinearGradientBrush>
+
+    <Style x:Key="Section" TargetType="Border">
+      <Setter Property="BorderBrush" Value="{StaticResource Line}"/>
+      <Setter Property="BorderThickness" Value="0,1,0,0"/>
+      <Setter Property="Padding" Value="0,14,0,14"/>
+    </Style>
+    <Style x:Key="Rail" TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource Dim}"/>
+      <Setter Property="FontSize" Value="11"/>
+      <Setter Property="Margin" Value="0,7,0,0"/>
+      <Setter Property="VerticalAlignment" Value="Top"/>
+    </Style>
+    <Style x:Key="Lbl" TargetType="TextBlock">
+      <Setter Property="Foreground" Value="{StaticResource Dim}"/>
+      <Setter Property="FontSize" Value="11"/>
+      <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+
+    <Style TargetType="ToolTip">
+      <Setter Property="Background" Value="{StaticResource Bg2}"/>
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource Line}"/>
+      <Setter Property="FontFamily" Value="Cascadia Mono, Cascadia Code, Consolas"/>
+      <Setter Property="FontSize" Value="11.5"/>
+      <Setter Property="Padding" Value="8,5"/>
+    </Style>
+
+    <Style TargetType="TextBox">
+      <Setter Property="Background" Value="{StaticResource Bg2}"/>
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource Line}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CaretBrush" Value="{StaticResource Amber}"/>
+      <Setter Property="SelectionBrush" Value="{StaticResource Amber}"/>
+      <Setter Property="Padding" Value="7,3"/>
+      <Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="TextBox">
+            <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+              <ScrollViewer x:Name="PART_ContentHost" Margin="{TemplateBinding Padding}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource Amber}"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.5"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style TargetType="Button">
+      <Setter Property="Background" Value="{StaticResource Bg2}"/>
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource Line}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="14,4"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" Margin="{TemplateBinding Padding}"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource Amber}"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource Amber}"/>
+              </Trigger>
+              <Trigger Property="IsPressed" Value="True">
+                <Setter TargetName="Bd" Property="Opacity" Value="0.7"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.35"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+    <Style x:Key="Primary" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="Background" Value="{StaticResource Amber}"/>
+      <Setter Property="BorderBrush" Value="{StaticResource Amber}"/>
+      <Setter Property="Foreground" Value="#0B0C0E"/>
+      <Setter Property="FontWeight" Value="Bold"/>
+      <Style.Triggers>
+        <Trigger Property="IsMouseOver" Value="True">
+          <Setter Property="Background" Value="#FFC64D"/>
+        </Trigger>
+      </Style.Triggers>
+    </Style>
+    <Style x:Key="Small" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+      <Setter Property="Padding" Value="8,3"/>
+      <Setter Property="FontSize" Value="10.5"/>
+      <Setter Property="HorizontalAlignment" Value="Left"/>
+    </Style>
+
+    <Style TargetType="CheckBox">
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="CheckBox">
+            <StackPanel Orientation="Horizontal" Background="Transparent">
+              <Border x:Name="Box" Width="16" Height="16" VerticalAlignment="Center" Background="{StaticResource Bg2}" BorderBrush="{StaticResource Line}" BorderThickness="1">
+                <Rectangle x:Name="Mark" Width="8" Height="8" Fill="{StaticResource Amber}" Visibility="Collapsed"/>
+              </Border>
+              <ContentPresenter Margin="8,0,0,0" VerticalAlignment="Center"/>
+            </StackPanel>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Mark" Property="Visibility" Value="Visible"/>
+              </Trigger>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource Amber}"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Box" Property="BorderBrush" Value="{StaticResource Amber}"/>
+              </Trigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.4"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style x:Key="Seg" TargetType="RadioButton">
+      <Setter Property="Foreground" Value="{StaticResource Dim}"/>
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="RadioButton">
+            <Border x:Name="Bd" Background="{StaticResource Bg2}" BorderBrush="{StaticResource Line}" BorderThickness="1" Padding="18,4" Margin="0,0,-1,0">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+              </Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource Amber}"/>
+              </Trigger>
+              <Trigger Property="IsChecked" Value="True">
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource Amber}"/>
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource Amber}"/>
+                <Setter Property="Foreground" Value="#0B0C0E"/>
+                <Setter Property="FontWeight" Value="Bold"/>
+              </Trigger>
+              <MultiTrigger>
+                <MultiTrigger.Conditions>
+                  <Condition Property="IsChecked" Value="True"/>
+                  <Condition Property="Tag" Value="danger"/>
+                </MultiTrigger.Conditions>
+                <Setter TargetName="Bd" Property="Background" Value="{StaticResource Danger}"/>
+                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource Danger}"/>
+              </MultiTrigger>
+              <Trigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45"/>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style TargetType="ProgressBar">
+      <Setter Property="Height" Value="18"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ProgressBar">
+            <Grid ClipToBounds="True">
+              <Rectangle x:Name="PART_Track" Fill="{StaticResource SegOff}"/>
+              <Rectangle x:Name="PART_Indicator" HorizontalAlignment="Left" Fill="{StaticResource SegOn}"/>
+              <Rectangle x:Name="Sweep" Width="126" HorizontalAlignment="Left" Fill="{StaticResource SegOn}" Visibility="Collapsed">
+                <Rectangle.RenderTransform>
+                  <TranslateTransform X="0"/>
+                </Rectangle.RenderTransform>
+              </Rectangle>
+            </Grid>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsIndeterminate" Value="True">
+                <Setter TargetName="Sweep" Property="Visibility" Value="Visible"/>
+                <Setter TargetName="PART_Indicator" Property="Visibility" Value="Collapsed"/>
+                <Trigger.EnterActions>
+                  <BeginStoryboard x:Name="SweepStory">
+                    <Storyboard RepeatBehavior="Forever" AutoReverse="True">
+                      <DoubleAnimation Storyboard.TargetName="Sweep" Storyboard.TargetProperty="(UIElement.RenderTransform).(TranslateTransform.X)" From="0" To="612" Duration="0:0:1.6"/>
+                    </Storyboard>
+                  </BeginStoryboard>
+                </Trigger.EnterActions>
+                <Trigger.ExitActions>
+                  <StopStoryboard BeginStoryboardName="SweepStory"/>
+                </Trigger.ExitActions>
+              </Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+
+    <Style TargetType="ScrollBar">
+      <Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Width" Value="10"/>
+      <Setter Property="MinWidth" Value="10"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="ScrollBar">
+            <Grid Background="{TemplateBinding Background}">
+              <Track x:Name="PART_Track" IsDirectionReversed="True">
+                <Track.Thumb>
+                  <Thumb>
+                    <Thumb.Template>
+                      <ControlTemplate TargetType="Thumb">
+                        <Border Background="#3A3F47" Margin="3,0,1,0"/>
+                      </ControlTemplate>
+                    </Thumb.Template>
+                  </Thumb>
+                </Track.Thumb>
+              </Track>
+            </Grid>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+      <Style.Triggers>
+        <Trigger Property="Orientation" Value="Horizontal">
+          <Setter Property="Width" Value="Auto"/>
+          <Setter Property="MinWidth" Value="0"/>
+          <Setter Property="Height" Value="10"/>
+          <Setter Property="MinHeight" Value="10"/>
+          <Setter Property="Template">
+            <Setter.Value>
+              <ControlTemplate TargetType="ScrollBar">
+                <Grid Background="{TemplateBinding Background}">
+                  <Track x:Name="PART_Track" IsDirectionReversed="False">
+                    <Track.Thumb>
+                      <Thumb>
+                        <Thumb.Template>
+                          <ControlTemplate TargetType="Thumb">
+                            <Border Background="#3A3F47" Margin="0,3,0,1"/>
+                          </ControlTemplate>
+                        </Thumb.Template>
+                      </Thumb>
+                    </Track.Thumb>
+                  </Track>
+                </Grid>
+              </ControlTemplate>
+            </Setter.Value>
+          </Setter>
+        </Trigger>
+      </Style.Triggers>
+    </Style>
+  </Window.Resources>
+
+  <Border x:Name="Root" Background="{StaticResource Bg0}" Padding="22,14,22,18">
+    <Grid>
+      <Grid.RowDefinitions>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="Auto"/>
+        <RowDefinition Height="*"/>
+      </Grid.RowDefinitions>
+
+      <DockPanel Grid.Row="0" Margin="0,0,0,12" LastChildFill="False">
+        <TextBlock DockPanel.Dock="Left" Text="ROBOGO" FontSize="22" FontWeight="Bold" Foreground="{StaticResource Amber}"/>
+        <TextBlock DockPanel.Dock="Left" Text="robocopy, minus the typing" Margin="14,0,0,4" VerticalAlignment="Bottom" Foreground="{StaticResource Dim}"/>
+        <TextBlock x:Name="TxtVersion" DockPanel.Dock="Right" Margin="0,0,0,4" VerticalAlignment="Bottom" Foreground="{StaticResource Dim}"/>
+      </DockPanel>
+
+      <Border Grid.Row="1" Style="{StaticResource Section}">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="118"/>
+            <ColumnDefinition Width="*"/>
+          </Grid.ColumnDefinitions>
+          <TextBlock Style="{StaticResource Rail}"><Run Text="01" Foreground="{StaticResource Amber}" FontWeight="Bold"/><Run Text="  PATHS"/></TextBlock>
+          <Grid Grid.Column="1">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="48"/>
+              <ColumnDefinition Width="*"/>
+              <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+            <TextBlock Text="FROM" Style="{StaticResource Lbl}"/>
+            <TextBox x:Name="TxtSource" Grid.Column="1" AllowDrop="True" ToolTip="The folder to copy from. Type, paste, browse, or drop a folder here."/>
+            <Button x:Name="BtnSource" Grid.Column="2" Content="BROWSE" Margin="8,0,0,0"/>
+            <TextBlock Grid.Row="1" Text="TO" Style="{StaticResource Lbl}" Margin="0,8,0,0"/>
+            <TextBox x:Name="TxtDest" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0" AllowDrop="True" ToolTip="The folder to copy into. It is created if it does not exist."/>
+            <Button x:Name="BtnDest" Grid.Row="1" Grid.Column="2" Content="BROWSE" Margin="8,8,0,0"/>
+            <TextBlock Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,8,0,0" FontSize="11" Foreground="{StaticResource Dim}" TextWrapping="Wrap" Text="Robocopy copies what is inside FROM into TO. It does not create the FROM folder itself."/>
+          </Grid>
+        </Grid>
+      </Border>
+
+      <Border Grid.Row="2" Style="{StaticResource Section}">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="118"/>
+            <ColumnDefinition Width="*"/>
+          </Grid.ColumnDefinitions>
+          <TextBlock Style="{StaticResource Rail}"><Run Text="02" Foreground="{StaticResource Amber}" FontWeight="Bold"/><Run Text="  OPTIONS"/></TextBlock>
+          <StackPanel Grid.Column="1">
+            <DockPanel LastChildFill="False">
+              <RadioButton x:Name="RbCopy" DockPanel.Dock="Left" GroupName="Mode" Style="{StaticResource Seg}" Content="COPY" IsChecked="True" ToolTip="Add and update files in TO. Nothing is deleted."/>
+              <RadioButton x:Name="RbMirror" DockPanel.Dock="Left" GroupName="Mode" Style="{StaticResource Seg}" Content="MIRROR" Tag="danger" ToolTip="/MIR  make TO identical to FROM. Whatever is extra in TO is deleted."/>
+              <RadioButton x:Name="RbMove" DockPanel.Dock="Left" GroupName="Mode" Style="{StaticResource Seg}" Content="MOVE" Tag="danger" ToolTip="/MOVE  copy, then delete from FROM."/>
+              <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                <TextBlock Text="THREADS" Style="{StaticResource Lbl}"/>
+                <TextBox x:Name="TxtThreads" Width="46" Margin="8,0,18,0" Text="8" MaxLength="3" ToolTip="/MT:n  files copied in parallel. 1 turns it off."/>
+                <TextBlock Text="RETRIES" Style="{StaticResource Lbl}"/>
+                <TextBox x:Name="TxtRetries" Width="64" Margin="8,0,18,0" Text="2" MaxLength="7" ToolTip="/R:n  retries per failed file. Robocopy's own default is one million."/>
+                <TextBlock Text="WAIT S" Style="{StaticResource Lbl}"/>
+                <TextBox x:Name="TxtWait" Width="46" Margin="8,0,0,0" Text="5" MaxLength="4" ToolTip="/W:n  seconds to wait between retries."/>
+              </StackPanel>
+            </DockPanel>
+            <TextBlock x:Name="TxtModeHint" Margin="0,8,0,0" FontSize="11" TextWrapping="Wrap" Foreground="{StaticResource Dim}"/>
+            <WrapPanel Margin="0,12,0,0">
+              <CheckBox x:Name="ChkSub" Content="Subfolders" IsChecked="True" Margin="0,0,26,0" ToolTip="/E  include subfolders, empty ones too."/>
+              <CheckBox x:Name="ChkJunction" Content="Skip junctions" IsChecked="True" Margin="0,0,26,0" ToolTip="/XJ  do not follow junction points. Avoids endless loops in user profiles."/>
+              <CheckBox x:Name="ChkNewer" Content="Keep newer files" Margin="0,0,26,0" ToolTip="/XO  do not overwrite a file in TO with an older one from FROM."/>
+              <CheckBox x:Name="ChkRestart" Content="Restartable" ToolTip="/Z  resume a half-copied file after a network drop. Slower."/>
+            </WrapPanel>
+            <Grid Margin="0,12,0,0">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="86"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="SKIP FILES" Style="{StaticResource Lbl}"/>
+              <TextBox x:Name="TxtXF" Grid.Column="1" ToolTip="/XF  file names or patterns to leave out, separated by ;    Example: *.tmp; thumbs.db"/>
+              <TextBlock Grid.Column="2" Text="SKIP FOLDERS" Style="{StaticResource Lbl}" Margin="18,0,8,0"/>
+              <TextBox x:Name="TxtXD" Grid.Column="3" ToolTip="/XD  folder names or paths to leave out, separated by ;    Example: node_modules; .git"/>
+            </Grid>
+            <Grid Margin="0,8,0,0">
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="86"/>
+                <ColumnDefinition Width="*"/>
+              </Grid.ColumnDefinitions>
+              <TextBlock Text="EXTRA" Style="{StaticResource Lbl}"/>
+              <TextBox x:Name="TxtExtra" Grid.Column="1" ToolTip="Any other robocopy switches or file filters, added exactly as typed.    Example: *.jpg /MAXAGE:7"/>
+            </Grid>
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <Border Grid.Row="3" Style="{StaticResource Section}">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="118"/>
+            <ColumnDefinition Width="*"/>
+          </Grid.ColumnDefinitions>
+          <StackPanel>
+            <TextBlock Style="{StaticResource Rail}"><Run Text="03" Foreground="{StaticResource Amber}" FontWeight="Bold"/><Run Text="  COMMAND"/></TextBlock>
+            <Button x:Name="BtnCopyCmd" Style="{StaticResource Small}" Content="COPY" Margin="0,10,0,0" ToolTip="Copy the command to the clipboard."/>
+          </StackPanel>
+          <StackPanel Grid.Column="1">
+            <Border x:Name="TapeEdge" BorderBrush="{StaticResource Amber}" BorderThickness="3,0,0,0">
+              <Border Background="{StaticResource Bg1}" BorderBrush="{StaticResource Line}" BorderThickness="0,1,1,1" Padding="12,9">
+                <WrapPanel x:Name="CmdPanel"/>
+              </Border>
+            </Border>
+            <TextBlock x:Name="TxtProblem" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="{StaticResource Danger}" Visibility="Collapsed"/>
+            <DockPanel Margin="0,12,0,0" LastChildFill="False">
+              <CheckBox x:Name="ChkScan" DockPanel.Dock="Left" VerticalAlignment="Center" Content="Scan first for exact % and ETA" IsChecked="True" ToolTip="Counts what needs copying before the real run. Turn it off for huge trees: you then get counters but no percent."/>
+              <Button x:Name="BtnCancel" DockPanel.Dock="Right" Content="CANCEL" Margin="8,0,0,0" IsEnabled="False"/>
+              <Button x:Name="BtnRun" DockPanel.Dock="Right" Style="{StaticResource Primary}" Content="RUN" MinWidth="110" Margin="8,0,0,0"/>
+              <Button x:Name="BtnDry" DockPanel.Dock="Right" Content="DRY RUN" ToolTip="/L  list what would happen without copying or deleting anything."/>
+            </DockPanel>
+          </StackPanel>
+        </Grid>
+      </Border>
+
+      <Border Grid.Row="4" Style="{StaticResource Section}" Padding="0,14,0,0">
+        <Grid>
+          <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="118"/>
+            <ColumnDefinition Width="*"/>
+          </Grid.ColumnDefinitions>
+          <StackPanel>
+            <TextBlock Style="{StaticResource Rail}" Margin="0,2,0,0"><Run Text="04" Foreground="{StaticResource Amber}" FontWeight="Bold"/><Run Text="  PROGRESS"/></TextBlock>
+            <Button x:Name="BtnToggleLog" Style="{StaticResource Small}" Content="HIDE LOG" Margin="0,10,0,0"/>
+            <Button x:Name="BtnOpenLog" Style="{StaticResource Small}" Content="OPEN LOG" Margin="0,6,0,0" IsEnabled="False" ToolTip="Open the full robocopy log of the last job."/>
+          </StackPanel>
+          <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="Auto"/>
+              <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <Grid>
+              <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="82"/>
+              </Grid.ColumnDefinitions>
+              <ProgressBar x:Name="Bar" Minimum="0" Maximum="100" Value="0"/>
+              <TextBlock x:Name="TxtPercent" Grid.Column="1" Text="--" TextAlignment="Right" VerticalAlignment="Center" FontSize="16" FontWeight="Bold" Foreground="{StaticResource Amber}"/>
+            </Grid>
+            <UniformGrid Grid.Row="1" Columns="4" Margin="0,10,0,0">
+              <StackPanel>
+                <TextBlock Text="FILES" Style="{StaticResource Lbl}"/>
+                <TextBlock x:Name="TxtFiles" Text="--" FontSize="14" Margin="0,2,0,0"/>
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Text="DATA" Style="{StaticResource Lbl}"/>
+                <TextBlock x:Name="TxtData" Text="--" FontSize="14" Margin="0,2,0,0"/>
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Text="SPEED" Style="{StaticResource Lbl}"/>
+                <TextBlock x:Name="TxtSpeed" Text="--" FontSize="14" Margin="0,2,0,0"/>
+              </StackPanel>
+              <StackPanel>
+                <TextBlock x:Name="LblEta" Text="ETA" Style="{StaticResource Lbl}"/>
+                <TextBlock x:Name="TxtEta" Text="--" FontSize="14" Margin="0,2,0,0"/>
+              </StackPanel>
+            </UniformGrid>
+            <TextBlock x:Name="TxtCurrent" Grid.Row="2" Margin="0,10,0,0" FontSize="11.5" Foreground="{StaticResource Dim}" TextTrimming="CharacterEllipsis"/>
+            <TextBlock x:Name="TxtStatus" Grid.Row="3" Margin="0,6,0,0" TextWrapping="Wrap" Text="Ready."/>
+            <TextBox x:Name="TxtLog" Grid.Row="4" Margin="0,10,0,0" MinHeight="70" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" VerticalContentAlignment="Stretch" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" Background="{StaticResource Bg1}" Foreground="{StaticResource Dim}" FontSize="11.5"/>
+          </Grid>
+        </Grid>
+      </Border>
+    </Grid>
+  </Border>
+</Window>
+'@
+}
+
+function New-RoboGoWindow {
+    # Loads the XAML and returns a hashtable: Window plus every named control.
+    Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Xaml
+    $reader = New-Object System.Xml.XmlNodeReader ([xml](Get-RoboGoXaml))
+    $window = [System.Windows.Markup.XamlReader]::Load($reader)
+    $ui = @{ Window = $window }
+    foreach ($name in $script:RoboGoControls) {
+        $control = $window.FindName($name)
+        if ($null -eq $control) { throw "Control '$name' is missing from the XAML." }
+        $ui[$name] = $control
+    }
+    return $ui
+}
+
+function Get-RoboGoOptions {
+    # Reads the fields into an options object. A number that does not parse becomes $null.
+    param($UI)
+    $o = New-RoboOptions
+    $o.Source = $UI.TxtSource.Text
+    $o.Destination = $UI.TxtDest.Text
+    if ($UI.RbMirror.IsChecked) { $o.Mode = 'Mirror' }
+    elseif ($UI.RbMove.IsChecked) { $o.Mode = 'Move' }
+    else { $o.Mode = 'Copy' }
+    $o.Subfolders = [bool]$UI.ChkSub.IsChecked
+    $o.SkipJunctions = [bool]$UI.ChkJunction.IsChecked
+    $o.OnlyNewer = [bool]$UI.ChkNewer.IsChecked
+    $o.Restartable = [bool]$UI.ChkRestart.IsChecked
+    $o.Threads = ConvertTo-RoboInt $UI.TxtThreads.Text
+    $o.Retries = ConvertTo-RoboInt $UI.TxtRetries.Text
+    $o.Wait = ConvertTo-RoboInt $UI.TxtWait.Text
+    $o.ExcludeFiles = $UI.TxtXF.Text
+    $o.ExcludeDirs = $UI.TxtXD.Text
+    $o.Extra = $UI.TxtExtra.Text
+    return $o
+}
+
+function Set-RoboGoStatus {
+    # Level: info, ok, warn or error.
+    param([string]$Text, [string]$Level = 'info')
+    $ui = $script:RoboGo.UI
+    $brush = 'Ink'
+    if ($Level -eq 'ok') { $brush = 'Ok' }
+    elseif ($Level -eq 'warn') { $brush = 'Amber' }
+    elseif ($Level -eq 'error') { $brush = 'Danger' }
+    $ui.TxtStatus.Text = $Text
+    $ui.TxtStatus.Foreground = $ui.Window.FindResource($brush)
+}
+
+function Invoke-RoboGoSafe {
+    # Runs an event handler body. An unexpected error lands in the status line instead of
+    # taking the window down.
+    param([scriptblock]$Action)
+    try { & $Action }
+    catch { Set-RoboGoStatus ('Unexpected error: ' + $_.Exception.Message) 'error' }
+}
+
+function Update-RoboGoPreview {
+    # Rebuilds the coloured command, the mode hint and the problem line from the fields.
+    $ui = $script:RoboGo.UI
+    $options = Get-RoboGoOptions $ui
+    # One element per token: the WrapPanel moves whole tokens to the next line, so a switch
+    # is never split in the middle. Only a token longer than the line (a long path) wraps.
+    $ui.CmdPanel.Children.Clear()
+    foreach ($part in (Get-RoboCommandParts $options)) {
+        $token = New-Object System.Windows.Controls.TextBlock
+        $token.Text = $part.Text
+        $token.FontSize = 13.5
+        $token.TextWrapping = 'Wrap'
+        $token.Margin = New-Object System.Windows.Thickness (0, 1, 9, 1)
+        $token.Foreground = $ui.Window.FindResource($script:RoboGoPartBrush[$part.Kind])
+        [void]$ui.CmdPanel.Children.Add($token)
+    }
+    $danger = Get-RoboDanger $options
+    if ($danger -ne '') {
+        $ui.TxtModeHint.Text = $danger
+        $ui.TxtModeHint.Foreground = $ui.Window.FindResource('Danger')
+        $ui.TapeEdge.BorderBrush = $ui.Window.FindResource('Danger')
+    }
+    else {
+        $ui.TxtModeHint.Text = 'Copy adds and updates files in TO. Nothing is deleted.'
+        $ui.TxtModeHint.Foreground = $ui.Window.FindResource('Dim')
+        $ui.TapeEdge.BorderBrush = $ui.Window.FindResource('Amber')
+    }
+    if ($null -eq $script:RoboGo.Job) { $ui.ChkSub.IsEnabled = ($options.Mode -ne 'Mirror') }
+    # Empty paths are not nagged about while typing; Run checks everything, disk included.
+    $all = Test-RoboOptions $options -SkipFileSystem
+    $problems = @($all | Where-Object { $_ -notlike 'Pick a *' })
+    if ($problems.Count -gt 0) {
+        $ui.TxtProblem.Text = $problems[0]
+        $ui.TxtProblem.Visibility = 'Visible'
+    }
+    else {
+        $ui.TxtProblem.Visibility = 'Collapsed'
+    }
+}
+
+function Add-RoboGoLog {
+    param([string]$Line)
+    $s = $script:RoboGo
+    $s.LogLines.Add($Line)
+    if ($s.LogLines.Count -gt 600) { $s.LogLines.RemoveRange(0, $s.LogLines.Count - 500) }
+    $s.LogDirty = $true
+}
+
+function Update-RoboGoLogView {
+    # The box shows the last few hundred lines; the full log is in the log file.
+    $s = $script:RoboGo
+    if (-not $s.LogDirty) { return }
+    $s.UI.TxtLog.Text = [string]::Join([Environment]::NewLine, $s.LogLines.ToArray())
+    $s.UI.TxtLog.ScrollToEnd()
+    $s.LogDirty = $false
+}
+
+function Set-RoboGoBusy {
+    param([bool]$Busy)
+    $ui = $script:RoboGo.UI
+    foreach ($name in $script:RoboGoInputs) { $ui[$name].IsEnabled = (-not $Busy) }
+    $ui.BtnCancel.IsEnabled = $Busy
+    if (-not $Busy) { $ui.ChkSub.IsEnabled = (-not [bool]$ui.RbMirror.IsChecked) }
+}
+
+function Start-RoboGoPhase {
+    # Phase is Scan, Run or DryRun, which is also the job kind.
+    param([string]$Phase)
+    $s = $script:RoboGo
+    $s.Phase = $Phase
+    $s.Job = Start-RoboJob $s.Options $Phase
+    $s.Meter = New-RoboSpeedMeter
+    $s.Clock = [System.Diagnostics.Stopwatch]::StartNew()
+    $s.UI.Bar.IsIndeterminate = (($Phase -ne 'Run') -or ($s.TotalBytes -le 0))
+    if ($Phase -eq 'Scan') { Set-RoboGoStatus 'Scanning: counting what needs to be copied...' }
+    elseif ($Phase -eq 'DryRun') { Set-RoboGoStatus 'Dry run: listing what would happen. Nothing is changed.' }
+    else { Set-RoboGoStatus 'Copying...' }
+}
+
+function Start-RoboGoRun {
+    # The Run and Dry run buttons: validate, confirm destructive jobs, start the first phase.
+    param([switch]$DryRun)
+    $s = $script:RoboGo
+    $ui = $s.UI
+    if ($null -ne $s.Job) { return }
+    $options = Get-RoboGoOptions $ui
+    $problems = Test-RoboOptions $options
+    if ($problems.Count -gt 0) {
+        $ui.TxtProblem.Text = ($problems -join '  ')
+        $ui.TxtProblem.Visibility = 'Visible'
+        return
+    }
+    $danger = Get-RoboDanger $options
+    if (($danger -ne '') -and (-not $DryRun)) {
+        $message = $danger + "`n`nFROM  " + (ConvertTo-RoboPath $options.Source) + "`nTO    " + (ConvertTo-RoboPath $options.Destination) + "`n`nDRY RUN shows what would happen without touching anything.`n`nRun it for real?"
+        $answer = [System.Windows.MessageBox]::Show($ui.Window, $message, 'RoboGo', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning, [System.Windows.MessageBoxResult]::No)
+        if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return }
+    }
+    Remove-RoboOldLogs
+    $s.Options = $options
+    $s.DryRun = [bool]$DryRun
+    $s.Cancelled = $false
+    $s.TotalFiles = [long]-1
+    $s.TotalBytes = [long]-1
+    $s.ScanLines.Clear()
+    $s.LogLines.Clear()
+    $s.TotalClock = [System.Diagnostics.Stopwatch]::StartNew()
+    $ui.Bar.Value = 0
+    foreach ($name in 'TxtPercent', 'TxtFiles', 'TxtData', 'TxtSpeed', 'TxtEta') { $ui[$name].Text = '--' }
+    $ui.LblEta.Text = 'ETA'
+    $ui.TxtCurrent.Text = ''
+    $ui.TxtProblem.Visibility = 'Collapsed'
+    $suffix = ''
+    if ($DryRun) { $suffix = ' /L' }
+    Add-RoboGoLog ('> ' + (Get-RoboCommandLine $options) + $suffix)
+    Set-RoboGoBusy $true
+    try {
+        if ($DryRun) { Start-RoboGoPhase 'DryRun' }
+        elseif ($ui.ChkScan.IsChecked) { Start-RoboGoPhase 'Scan' }
+        else { Start-RoboGoPhase 'Run' }
+    }
+    catch {
+        $s.Job = $null
+        $s.Phase = 'Idle'
+        Set-RoboGoBusy $false
+        throw
+    }
+    Update-RoboGoLogView
+    $s.Timer.Start()
+}
+
+function Stop-RoboGoRun {
+    # The Cancel button.
+    $s = $script:RoboGo
+    if ($null -eq $s.Job) { return }
+    $s.Cancelled = $true
+    Set-RoboGoStatus 'Stopping...' 'warn'
+    Stop-RoboJob $s.Job
+}
+
+function Update-RoboGoNumbers {
+    # Refreshes bar, counters, speed and ETA from the running job.
+    $s = $script:RoboGo
+    $ui = $s.UI
+    $state = $s.Job.State
+    if ($s.Phase -eq 'DryRun') {
+        $ui.TxtFiles.Text = [string]$state.SeenFiles
+        $ui.TxtData.Text = Format-RoboBytes $state.SeenBytes
+        return
+    }
+    $done = Get-RoboDoneBytes $state
+    Add-RoboSpeedSample $s.Meter $done $s.Clock.Elapsed.TotalSeconds
+    $speed = Get-RoboSpeed $s.Meter
+    $ui.TxtSpeed.Text = (Format-RoboBytes $speed) + '/s'
+    $ui.TxtCurrent.Text = Get-RoboShortPath $state.CurrentFile 110
+    if ($s.TotalBytes -gt 0) {
+        # 100 is reserved for the moment robocopy has exited successfully.
+        $pct = [math]::Min(99.9, (100.0 * $done / $s.TotalBytes))
+        $ui.Bar.Value = $pct
+        $ui.TxtPercent.Text = [string]::Format($script:Inv, '{0:0.0}%', $pct)
+        $ui.TxtFiles.Text = '{0} / {1}' -f $state.CompletedFiles, $s.TotalFiles
+        $ui.TxtData.Text = (Format-RoboBytes $done) + ' / ' + (Format-RoboBytes $s.TotalBytes)
+        if ($speed -gt 0) { $ui.TxtEta.Text = Format-RoboDuration (($s.TotalBytes - $done) / $speed) }
+        else { $ui.TxtEta.Text = '--' }
+    }
+    else {
+        $ui.TxtFiles.Text = [string]$state.CompletedFiles
+        $ui.TxtData.Text = Format-RoboBytes $done
+    }
+    if ($state.Errors -gt 0) {
+        Set-RoboGoStatus ('Copying... {0} error(s) so far, see the log.' -f $state.Errors) 'warn'
+    }
+}
+
+function Complete-RoboGo {
+    # The job is over (finished, failed or cancelled): show the verdict and unlock the window.
+    $s = $script:RoboGo
+    $ui = $s.UI
+    $job = $s.Job
+    $s.Timer.Stop()
+    $state = $job.State
+    $verdict = Get-RoboVerdict -ExitCode ([int]$job.ExitCode) -Summary $state.Summary -DryRun:$s.DryRun -Cancelled:$s.Cancelled -Mirror:($s.Options.Mode -eq 'Mirror')
+    $ui.Bar.IsIndeterminate = $false
+    if (($s.Phase -eq 'Run') -and (-not $s.Cancelled)) {
+        if ($verdict.Level -ne 'error') {
+            $ui.Bar.Value = 100
+            $ui.TxtPercent.Text = '100%'
+        }
+        if ($null -ne $state.Summary) {
+            $copied = $state.Summary.Bytes.Copied
+            if ($s.TotalFiles -ge 0) { $ui.TxtFiles.Text = '{0} / {1}' -f $state.Summary.Files.Copied, $s.TotalFiles }
+            else { $ui.TxtFiles.Text = [string]$state.Summary.Files.Copied }
+            $ui.TxtData.Text = Format-RoboBytes $copied
+            $seconds = $s.Clock.Elapsed.TotalSeconds
+            if ($seconds -gt 0) { $ui.TxtSpeed.Text = (Format-RoboBytes ($copied / $seconds)) + '/s' }
+        }
+    }
+    elseif ($s.Phase -ne 'Run') {
+        $ui.Bar.Value = 0
+        $ui.TxtPercent.Text = '--'
+    }
+    $ui.LblEta.Text = 'TOOK'
+    $ui.TxtEta.Text = Format-RoboDuration $s.TotalClock.Elapsed.TotalSeconds
+    $ui.TxtCurrent.Text = ''
+    Set-RoboGoStatus $verdict.Text $verdict.Level
+    Add-RoboGoLog ('== ' + $verdict.Text)
+    Update-RoboGoLogView
+    $s.LastLog = $job.LogPath
+    $ui.BtnOpenLog.IsEnabled = $true
+    $s.Job = $null
+    $s.Phase = 'Idle'
+    Set-RoboGoBusy $false
+}
+
+function Step-RoboGo {
+    # One timer tick: read new log output, refresh the numbers, move to the next phase.
+    $s = $script:RoboGo
+    $job = $s.Job
+    if ($null -eq $job) {
+        $s.Timer.Stop()
+        return
+    }
+    $lines = Read-RoboJob $job
+    if ($s.Phase -eq 'Scan') {
+        foreach ($line in $lines) { $s.ScanLines.Add($line) }
+        if (-not $job.Done) { return }
+        if ($s.Cancelled) {
+            Complete-RoboGo
+            return
+        }
+        if (($job.ExitCode -lt 0) -or ($job.ExitCode -ge 16)) {
+            foreach ($line in $s.ScanLines) { Add-RoboGoLog $line }
+            Complete-RoboGo
+            return
+        }
+        $summary = $job.State.Summary
+        if ($null -ne $summary) {
+            $s.TotalFiles = [long]$summary.Files.Copied
+            $s.TotalBytes = [long]$summary.Bytes.Copied
+            Add-RoboGoLog ('Scan: {0} file(s), {1} to copy.' -f $s.TotalFiles, (Format-RoboBytes $s.TotalBytes))
+        }
+        else {
+            Add-RoboGoLog 'Scan: no totals found, running without percent.'
+        }
+        Start-RoboGoPhase 'Run'
+        Update-RoboGoLogView
+        return
+    }
+    foreach ($line in $lines) { Add-RoboGoLog $line }
+    Update-RoboGoNumbers
+    Update-RoboGoLogView
+    if ($job.Done) { Complete-RoboGo }
+}
+
+function Stop-RoboGoOnError {
+    # A tick failed unexpectedly: stop everything and say so.
+    param($ErrorRecord)
+    $s = $script:RoboGo
+    $s.Timer.Stop()
+    if ($null -ne $s.Job) {
+        Stop-RoboJob $s.Job
+        $s.Job = $null
+    }
+    $s.Phase = 'Idle'
+    $s.UI.Bar.IsIndeterminate = $false
+    Set-RoboGoBusy $false
+    Set-RoboGoStatus ('Unexpected error: ' + $ErrorRecord.Exception.Message) 'error'
+}
+
+function Switch-RoboGoLog {
+    # Hides or shows the log box and resizes the window to match.
+    $s = $script:RoboGo
+    $ui = $s.UI
+    $window = $ui.Window
+    if ($ui.TxtLog.Visibility -eq [System.Windows.Visibility]::Visible) {
+        $s.SavedHeight = $window.ActualHeight
+        $s.SavedMinHeight = $window.MinHeight
+        $ui.TxtLog.Visibility = 'Collapsed'
+        $ui.BtnToggleLog.Content = 'SHOW LOG'
+        $window.MinHeight = 0
+        $window.SizeToContent = 'Height'
+    }
+    else {
+        $window.SizeToContent = 'Manual'
+        $window.MinHeight = $s.SavedMinHeight
+        if ($s.SavedHeight -gt 0) { $window.Height = $s.SavedHeight }
+        $ui.TxtLog.Visibility = 'Visible'
+        $ui.BtnToggleLog.Content = 'HIDE LOG'
+    }
+}
+
+function Select-RoboFolder {
+    # Folder picker. Uses the modern Windows dialog when the runtime has it (.NET 8 and up,
+    # that is PowerShell 7.4 and up), otherwise the classic one.
+    param([string]$Initial, [string]$Title)
+    $start = ConvertTo-RoboPath $Initial
+    if (($start -ne '') -and (-not (Test-Path -LiteralPath $start -PathType Container))) { $start = '' }
+    $picked = ''
+    $modern = 'Microsoft.Win32.OpenFolderDialog' -as [type]
+    if ($null -ne $modern) {
+        $dialog = [System.Activator]::CreateInstance($modern)
+        $dialog.Title = $Title
+        if ($start -ne '') { $dialog.InitialDirectory = $start }
+        if ($dialog.ShowDialog($script:RoboGo.UI.Window)) { $picked = $dialog.FolderName }
+    }
+    else {
+        Add-Type -AssemblyName System.Windows.Forms
+        $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+        try {
+            $dialog.Description = $Title
+            if ($start -ne '') { $dialog.SelectedPath = $start }
+            if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $picked = $dialog.SelectedPath }
+        }
+        finally {
+            $dialog.Dispose()
+        }
+    }
+    return $picked
+}
+
+function Set-RoboDarkTitleBar {
+    # Asks Windows for a dark title bar (DWMWA_USE_IMMERSIVE_DARK_MODE). Cosmetic only.
+    param($Window)
+    try {
+        if (-not ('RoboGo.Dwm' -as [type])) {
+            Add-Type -Namespace RoboGo -Name Dwm -MemberDefinition '[DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);'
+        }
+        $handle = (New-Object System.Windows.Interop.WindowInteropHelper $Window).EnsureHandle()
+        $on = 1
+        [void][RoboGo.Dwm]::DwmSetWindowAttribute($handle, 20, [ref]$on, 4)
+    }
+    catch { }
+}
+
+function Initialize-RoboGoWindow {
+    # Wires the events and creates the controller state. Kept apart from New-RoboGoWindow
+    # so that the tests can drive the window without showing it.
+    param($UI)
+    $timer = New-Object System.Windows.Threading.DispatcherTimer
+    $timer.Interval = [TimeSpan]::FromMilliseconds(200)
+    $script:RoboGo = @{
+        UI             = $UI
+        Timer          = $timer
+        Job            = $null
+        Phase          = 'Idle'
+        Options        = $null
+        DryRun         = $false
+        Cancelled      = $false
+        TotalFiles     = [long]-1
+        TotalBytes     = [long]-1
+        Meter          = $null
+        Clock          = $null
+        TotalClock     = $null
+        LogLines       = (New-Object System.Collections.Generic.List[string])
+        LogDirty       = $false
+        ScanLines      = (New-Object System.Collections.Generic.List[string])
+        LastLog        = ''
+        SavedHeight    = 0.0
+        SavedMinHeight = 0.0
+    }
+    $UI.TxtVersion.Text = 'v' + $script:RoboGoVersion
+
+    $timer.Add_Tick({
+            try { Step-RoboGo }
+            catch { Stop-RoboGoOnError $_ }
+        })
+
+    $refresh = { Invoke-RoboGoSafe { Update-RoboGoPreview } }
+    foreach ($name in 'TxtSource', 'TxtDest', 'TxtThreads', 'TxtRetries', 'TxtWait', 'TxtXF', 'TxtXD', 'TxtExtra') {
+        $UI[$name].Add_TextChanged($refresh)
+    }
+    foreach ($name in 'RbCopy', 'RbMirror', 'RbMove', 'ChkSub', 'ChkJunction', 'ChkNewer', 'ChkRestart') {
+        $UI[$name].Add_Checked($refresh)
+        $UI[$name].Add_Unchecked($refresh)
+    }
+
+    $UI.BtnSource.Add_Click({
+            Invoke-RoboGoSafe {
+                $box = $script:RoboGo.UI.TxtSource
+                $picked = Select-RoboFolder $box.Text 'Pick the folder to copy FROM'
+                if ($picked -ne '') { $box.Text = $picked }
+            }
+        })
+    $UI.BtnDest.Add_Click({
+            Invoke-RoboGoSafe {
+                $box = $script:RoboGo.UI.TxtDest
+                $picked = Select-RoboFolder $box.Text 'Pick the folder to copy TO'
+                if ($picked -ne '') { $box.Text = $picked }
+            }
+        })
+
+    # A text box refuses file drops unless the preview events say otherwise.
+    foreach ($name in 'TxtSource', 'TxtDest') {
+        $UI[$name].Add_PreviewDragOver({
+                param($control, $e)
+                if ($e.Data.GetDataPresent([System.Windows.DataFormats]::FileDrop)) { $e.Effects = [System.Windows.DragDropEffects]::Copy }
+                else { $e.Effects = [System.Windows.DragDropEffects]::None }
+                $e.Handled = $true
+            })
+        $UI[$name].Add_PreviewDrop({
+                param($control, $e)
+                Invoke-RoboGoSafe {
+                    $dropped = $e.Data.GetData([System.Windows.DataFormats]::FileDrop)
+                    if ($dropped) {
+                        $path = [string]@($dropped)[0]
+                        if (Test-Path -LiteralPath $path -PathType Leaf) {
+                            $path = [System.IO.Path]::GetDirectoryName($path)
+                            Set-RoboGoStatus 'That was a file, so its folder was taken.'
+                        }
+                        $control.Text = $path
+                    }
+                }
+                $e.Handled = $true
+            })
+    }
+
+    $UI.BtnRun.Add_Click({ Invoke-RoboGoSafe { Start-RoboGoRun } })
+    $UI.BtnDry.Add_Click({ Invoke-RoboGoSafe { Start-RoboGoRun -DryRun } })
+    $UI.BtnCancel.Add_Click({ Invoke-RoboGoSafe { Stop-RoboGoRun } })
+    $UI.BtnCopyCmd.Add_Click({
+            Invoke-RoboGoSafe {
+                [System.Windows.Clipboard]::SetText((Get-RoboCommandLine (Get-RoboGoOptions $script:RoboGo.UI)))
+                if ($null -eq $script:RoboGo.Job) { Set-RoboGoStatus 'Command copied to the clipboard.' }
+            }
+        })
+    $UI.BtnToggleLog.Add_Click({ Invoke-RoboGoSafe { Switch-RoboGoLog } })
+    $UI.BtnOpenLog.Add_Click({
+            Invoke-RoboGoSafe {
+                $log = $script:RoboGo.LastLog
+                if (($log -ne '') -and (Test-Path -LiteralPath $log)) { Invoke-Item -LiteralPath $log }
+            }
+        })
+
+    $UI.Window.Add_Closing({
+            param($window, $e)
+            $s = $script:RoboGo
+            if ($null -ne $s.Job) {
+                $answer = [System.Windows.MessageBox]::Show($s.UI.Window, 'A job is still running. Stop it and close RoboGo?', 'RoboGo', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning, [System.Windows.MessageBoxResult]::No)
+                if ($answer -ne [System.Windows.MessageBoxResult]::Yes) {
+                    $e.Cancel = $true
+                    return
+                }
+                $s.Timer.Stop()
+                Stop-RoboJob $s.Job
+                $s.Job = $null
+            }
+        })
+
+    Update-RoboGoPreview
+}
+
+function Show-RoboGoWindow {
+    $ui = New-RoboGoWindow
+    Initialize-RoboGoWindow $ui
+    $area = [System.Windows.SystemParameters]::WorkArea
+    if ($ui.Window.Height -gt ($area.Height - 16)) {
+        $ui.Window.Height = [math]::Max($ui.Window.MinHeight, ($area.Height - 16))
+    }
+    Set-RoboDarkTitleBar $ui.Window
+    [void]$ui.Window.ShowDialog()
+}
+
+function Invoke-RoboGoSelfTest {
+    # A quick built-in check that needs nothing but this file. Returns the number of failures.
+    $checks = New-Object System.Collections.Generic.List[object]
+    $o = New-RoboOptions
+    $o.Source = 'C:\a b\'
+    $o.Destination = 'D:\'
+    $checks.Add(@('command builder', ((Get-RoboCommandLine $o) -eq 'robocopy "C:\a b" D:\ /E /MT:8 /R:2 /W:5 /XJ')))
+    $tab = [string][char]9
+    $state = New-RoboProgress
+    Update-RoboProgress $state @(($tab + 'New File' + $tab + $tab + '10' + $tab + 'C:\a b\x.txt'), '100%')
+    $checks.Add(@('log parser', (($state.CompletedFiles -eq 1) -and ($state.CompletedBytes -eq 10))))
+    $checks.Add(@('robocopy.exe is present', (Test-Path -LiteralPath $script:RoboExe)))
+    $windowOk = $false
+    try {
+        $ui = New-RoboGoWindow
+        Initialize-RoboGoWindow $ui
+        $windowOk = ($ui.CmdPanel.Children.Count -gt 0)
+    }
+    catch {
+        Write-Host ('       ' + $_.Exception.Message)
+    }
+    $checks.Add(@('window loads', $windowOk))
+    $failed = 0
+    foreach ($check in $checks) {
+        if ($check[1]) { Write-Host ('[OK] ' + $check[0]) }
+        else {
+            Write-Host ('[X]  ' + $check[0])
+            $failed++
+        }
+    }
+    if ($failed -eq 0) { Write-Host ('RoboGo ' + $script:RoboGoVersion + ' self-test: all good') }
+    else { Write-Host ('RoboGo ' + $script:RoboGoVersion + ' self-test: ' + $failed + ' check(s) failed') }
+    return $failed
+}
+
+# ============================================================================
+# Entry point
+# ============================================================================
+
+if ($NoUI) { return }
+if ($SelfTest) { exit (Invoke-RoboGoSelfTest) }
+try {
+    Show-RoboGoWindow
+}
+catch {
+    # The console is hidden when started through RoboGo.cmd, so say it in a box.
+    Add-Type -AssemblyName PresentationFramework
+    [void][System.Windows.MessageBox]::Show(('RoboGo could not start.' + [Environment]::NewLine + [Environment]::NewLine + $_.Exception.Message), 'RoboGo')
+    exit 1
+}
