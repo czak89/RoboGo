@@ -282,3 +282,207 @@ function Format-RoboDuration {
     if ($m -gt 0) { return ('{0}m {1:00}s' -f $m, $s) }
     return ('{0}s' -f $s)
 }
+
+# ============================================================================
+# 2. Log parser. It reads the structure of robocopy's log (tabs, digits, the
+#    percent sign, the 0x error code), never its words, so the Windows display
+#    language does not matter.
+# ============================================================================
+
+$script:RxRoboError = New-Object System.Text.RegularExpressions.Regex '^\S.*\s\d+ \(0x[0-9A-Fa-f]{8}\)\s'
+$script:RxRoboSummary = New-Object System.Text.RegularExpressions.Regex '^\s*\S[^:]*:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$'
+
+function Split-RoboLogText {
+    # Splits decoded log text into complete lines. Robocopy separates progress updates with
+    # a bare CR, so CR and LF both end a line. An unfinished last line is returned in Rest,
+    # except a percent update, which is complete as soon as its percent sign is there.
+    param([string]$Text)
+    if ([string]::IsNullOrEmpty($Text)) { return @{ Lines = @(); Rest = '' } }
+    $last = [int]$Text[$Text.Length - 1]
+    $complete = (($last -eq 10) -or ($last -eq 13))
+    $pieces = $Text.Split([char[]]@([char]13, [char]10), [System.StringSplitOptions]::RemoveEmptyEntries)
+    $rest = ''
+    if ((-not $complete) -and ($pieces.Length -gt 0)) {
+        $tail = $pieces[$pieces.Length - 1]
+        $isPercent = (([int]$tail[0] -ne 9) -and $tail.TrimEnd().EndsWith('%'))
+        if (-not $isPercent) {
+            $rest = $tail
+            if ($pieces.Length -eq 1) { $pieces = @() } else { $pieces = $pieces[0..($pieces.Length - 2)] }
+        }
+    }
+    return @{ Lines = $pieces; Rest = $rest }
+}
+
+function New-RoboProgress {
+    # State for Update-RoboProgress. Threads decides how many unfinished files may be pending
+    # at once. DestinationPath lets the parser recognise extra files by their location.
+    param([int]$Threads = 1, [string]$DestinationPath = '')
+    $prefix = ''
+    $dst = ConvertTo-RoboPath $DestinationPath
+    if ($dst -ne '') {
+        try { $dst = [System.IO.Path]::GetFullPath($dst) } catch { }
+        $prefix = $dst.TrimEnd('\') + '\'
+    }
+    return @{
+        MaxPending     = $(if ($Threads -le 1) { 1 } else { $Threads * 4 })
+        DestPrefix     = $prefix
+        Pending        = (New-Object System.Collections.Generic.List[object])
+        CompletedFiles = 0
+        CompletedBytes = [long]0
+        SeenFiles      = 0
+        SeenBytes      = [long]0
+        ExtraFiles     = 0
+        ExtraDirs      = 0
+        Errors         = 0
+        LastError      = ''
+        CurrentFile    = ''
+        SummaryRows    = (New-Object System.Collections.Generic.List[object])
+        Summary        = $null
+    }
+}
+
+function ConvertTo-RoboSummary {
+    # Rows arrive in a fixed order: Dirs, Files, Bytes. Columns are fixed too.
+    param($Rows)
+    $columns = @('Total', 'Copied', 'Skipped', 'Mismatch', 'Failed', 'Extras')
+    $names = @('Dirs', 'Files', 'Bytes')
+    $summary = @{}
+    for ($r = 0; $r -lt 3; $r++) {
+        $row = @{}
+        for ($k = 0; $k -lt 6; $k++) { $row[$columns[$k]] = $Rows[$r][$k] }
+        $summary[$names[$r]] = $row
+    }
+    return $summary
+}
+
+function Update-RoboProgress {
+    # Feeds log lines into the state.
+    #   file line    TAB class TAB TAB size TAB path     -> a file robocopy is about to copy
+    #   percent      "  6.2%" ... "100%"                 -> progress of the newest pending file
+    #   error        "date time ERROR 32 (0x00000020) "  -> counted, the file stays unfinished
+    #   summary row  "  Files :  4  4  0  0  0  1"       -> the final numbers
+    # A file counts as copied only when its 100% arrives.
+    param([hashtable]$State, [string[]]$Lines)
+    foreach ($line in $Lines) {
+        if ($line.Length -eq 0) { continue }
+        $first = [int]$line[0]
+        if ($first -eq 9) {
+            $cells = $line.Split([char]9)
+            if (($cells.Length -ge 5) -and ($cells[2].Length -eq 0)) {
+                $size = [long]0
+                if (-not [long]::TryParse($cells[3].Trim(), [ref]$size)) { continue }
+                $class = $cells[1].Trim()
+                $path = $cells[4]
+                $extra = $class.StartsWith('*')
+                if ((-not $extra) -and ($State.DestPrefix -ne '') -and $path.StartsWith($State.DestPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { $extra = $true }
+                if ($extra) {
+                    $State.ExtraFiles++
+                    continue
+                }
+                $known = $false
+                for ($i = $State.Pending.Count - 1; $i -ge 0; $i--) {
+                    if ($State.Pending[$i].Path -eq $path) {
+                        # the same file again: robocopy is retrying it
+                        $State.Pending[$i].Pct = 0.0
+                        $known = $true
+                        break
+                    }
+                }
+                if (-not $known) {
+                    $State.SeenFiles++
+                    $State.SeenBytes += $size
+                    while ($State.Pending.Count -ge $State.MaxPending) { $State.Pending.RemoveAt(0) }
+                    $State.Pending.Add(@{ Path = $path; Size = $size; Pct = 0.0 })
+                }
+                $State.CurrentFile = $path
+            }
+            elseif (($cells.Length -eq 3) -and $cells[2].EndsWith('\') -and $cells[1].TrimStart().StartsWith('*')) {
+                $State.ExtraDirs++
+            }
+            continue
+        }
+        $text = $line.Trim()
+        if ($text.Length -eq 0) { continue }
+        if ($text.EndsWith('%')) {
+            $pct = 0.0
+            $number = $text.Substring(0, $text.Length - 1).Trim().Replace(',', '.')
+            if ([double]::TryParse($number, [System.Globalization.NumberStyles]::Float, $script:Inv, [ref]$pct)) {
+                $n = $State.Pending.Count
+                if ($n -gt 0) {
+                    if ($pct -ge 100) {
+                        $State.CompletedBytes += $State.Pending[$n - 1].Size
+                        $State.CompletedFiles++
+                        $State.Pending.RemoveAt($n - 1)
+                    }
+                    else {
+                        $State.Pending[$n - 1].Pct = $pct
+                    }
+                }
+                continue
+            }
+        }
+        if (($line.IndexOf('(0x') -gt 0) -and $script:RxRoboError.IsMatch($line)) {
+            $State.Errors++
+            $State.LastError = $text
+            continue
+        }
+        if (($first -eq 32) -and ($State.SummaryRows.Count -lt 3) -and ($line.IndexOf(':') -gt 0)) {
+            $m = $script:RxRoboSummary.Match($line)
+            if ($m.Success) {
+                $row = New-Object 'long[]' 6
+                for ($k = 0; $k -lt 6; $k++) { $row[$k] = [long]$m.Groups[$k + 1].Value }
+                $State.SummaryRows.Add($row)
+                if ($State.SummaryRows.Count -eq 3) { $State.Summary = ConvertTo-RoboSummary $State.SummaryRows }
+            }
+        }
+    }
+}
+
+function Get-RoboDoneBytes {
+    # Bytes copied so far: finished files plus the copied share of the unfinished ones.
+    param([hashtable]$State)
+    $bytes = [double]$State.CompletedBytes
+    foreach ($p in $State.Pending) {
+        if ($p.Pct -gt 0) { $bytes += $p.Size * $p.Pct / 100.0 }
+    }
+    return $bytes
+}
+
+function Get-RoboVerdict {
+    # Turns robocopy's exit code (a bit mask: 1 copied, 2 extras, 4 mismatches, 8 failures,
+    # 16 fatal) and the summary into one sentence. Level is ok, warn or error.
+    param([int]$ExitCode, $Summary, [switch]$DryRun, [switch]$Cancelled, [switch]$Mirror)
+    if ($Cancelled) {
+        return @{ Level = 'warn'; Text = 'Cancelled. Files that were already copied stay in the destination.' }
+    }
+    $detail = ''
+    if ($Summary) {
+        $verb = $(if ($DryRun) { 'Would copy' } else { 'Copied' })
+        $detail = '{0} {1} file(s), {2}' -f $verb, $Summary.Files.Copied, (Format-RoboBytes $Summary.Bytes.Copied)
+        if ($Summary.Files.Skipped -gt 0) { $detail += (', {0} skipped' -f $Summary.Files.Skipped) }
+        if ($Summary.Files.Failed -gt 0) { $detail += (', {0} FAILED' -f $Summary.Files.Failed) }
+        $extras = $Summary.Files.Extras + $Summary.Dirs.Extras
+        if ($extras -gt 0) {
+            if ($Mirror -and $DryRun) { $detail += (', {0} extra item(s) would be deleted from the destination' -f $extras) }
+            elseif ($Mirror) { $detail += (', {0} extra item(s) deleted from the destination' -f $extras) }
+            else { $detail += (', {0} extra item(s) in the destination left alone' -f $extras) }
+        }
+        $detail += '.'
+    }
+    if (($ExitCode -lt 0) -or ($ExitCode -ge 16)) {
+        return @{ Level = 'error'; Text = "Fatal error (robocopy exit code $ExitCode). The job did not run properly: check the paths and the log." }
+    }
+    if (($ExitCode -band 8) -ne 0) {
+        return @{ Level = 'error'; Text = ("Finished with errors. $detail See the log for the files that failed.").Replace('  ', ' ') }
+    }
+    if ($DryRun) {
+        return @{ Level = 'ok'; Text = ("Dry run, nothing was changed. $detail").Trim() }
+    }
+    if (($ExitCode -band 4) -ne 0) {
+        return @{ Level = 'warn'; Text = ("Done, but some items are mismatched (a file where a folder is expected, or the reverse). $detail").Trim() }
+    }
+    if (($ExitCode -band 1) -ne 0) {
+        return @{ Level = 'ok'; Text = ("Done. $detail").Trim() }
+    }
+    return @{ Level = 'ok'; Text = ("Nothing to copy, the destination is already up to date. $detail").Trim() }
+}
