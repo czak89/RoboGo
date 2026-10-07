@@ -1808,6 +1808,9 @@ function Update-RoboGoHelpRows {
         $button.HorizontalContentAlignment = 'Left'
         $button.Padding = New-Object System.Windows.Thickness (10, 4, 10, 4)
         $button.Margin = New-Object System.Windows.Thickness (0, 0, 0, 4)
+        # id and name for screen readers and for the smoke test
+        [System.Windows.Automation.AutomationProperties]::SetAutomationId($button, $setup.Key)
+        [System.Windows.Automation.AutomationProperties]::SetName($button, $text.Text)
         $button.Add_Click($s.OnHelpSetup)
         [void]$ui.HelpSetups.Children.Add($button)
     }
@@ -1831,6 +1834,8 @@ function Update-RoboGoHelpRows {
         $box.Tag = $item.Token
         $box.Content = $row
         $box.Margin = New-Object System.Windows.Thickness (0, 0, 0, 5)
+        [System.Windows.Automation.AutomationProperties]::SetAutomationId($box, $item.Key)
+        [System.Windows.Automation.AutomationProperties]::SetName($box, ($item.Token + ' ' + $about.Text))
         $box.Add_Checked($s.OnHelpSwitch)
         $box.Add_Unchecked($s.OnHelpSwitch)
         [void]$ui.HelpSwitches.Children.Add($box)
