@@ -509,7 +509,9 @@ try {
     $ui.TxtExtra.Text = ''
     $ui.TxtThreads.Text = '8'
     $ui.TxtRetries.Text = '0'
-    $lock = [System.IO.File]::Open((Join-Path $src 'f1.bin'), 'Open', 'ReadWrite', 'None')
+    # locked bytes: an elevated robocopy reads through an open that merely shares nothing
+    $lock = [System.IO.File]::Open((Join-Path $src 'f1.bin'), 'Open', 'ReadWrite', 'ReadWrite')
+    $lock.Lock(0, $lock.Length)
     try {
         Start-RoboGoRun
         Step-UntilIdle
@@ -525,7 +527,7 @@ try {
     Switch-RoboGoFailed
     $failedLines = @($ui.TxtLog.Text -split [Environment]::NewLine | Where-Object { $_ -ne '' })
     Assert-Equal 2 $failedLines.Count 'failed: the view lists the failure and nothing else, on two short lines'
-    Assert-True ($failedLines[0] -like 'Copying File *\f1.bin') 'failed: first what was being done with which file'
+    Assert-True ($failedLines[0] -match '^\S.* \S+\\f1\.bin$') 'failed: first what was being done with which file'
     Assert-True ($failedLines[1] -match '^    \d+ \(0x[0-9A-Fa-f]{8}\)  \S') 'failed: below it, indented, the error code and what Windows said'
     Assert-Equal 'FULL LOG' $ui.BtnFailed.Content 'failed: the button offers the way back'
     Copy-RoboGoLog

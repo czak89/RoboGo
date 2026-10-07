@@ -235,7 +235,10 @@ try {
 
     # --- a locked source file fails after the retries ---
     Add-Content -LiteralPath (Join-Path $src 'a.txt') -Value 'changed'
-    $lock = [System.IO.File]::Open((Join-Path $src 'a.txt'), 'Open', 'ReadWrite', 'None')
+    # A lock on the bytes, not an open that shares nothing: an elevated robocopy (a CI runner)
+    # reads through such an open and copies the file.
+    $lock = [System.IO.File]::Open((Join-Path $src 'a.txt'), 'Open', 'ReadWrite', 'ReadWrite')
+    $lock.Lock(0, $lock.Length)
     try {
         $job = Start-RoboJob (New-TestOptions $src $dst) 'Run'
         [void](Wait-RoboJob $job)
