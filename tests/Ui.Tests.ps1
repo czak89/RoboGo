@@ -1,9 +1,15 @@
-# Window tests. Nothing is shown on screen: the window is loaded, driven through its
+# Window tests. Nothing appears on screen: the window is loaded, driven through its
 # controls, run against real robocopy, and rendered to PNG files for review.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'TestHarness.ps1')
+# Settings, kept logs and language files belong to the program folder. ROBOGO_HOME points
+# the app at a throwaway one, with a small test language in it.
+$env:ROBOGO_HOME = Join-Path ([System.IO.Path]::GetTempPath()) ('RoboGoHomeTest-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path (Join-Path $env:ROBOGO_HOME 'lang') | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $env:ROBOGO_HOME 'lang\xx.json'), '{ "_name": "Test", "ui.from": "OD", "ph.source": "np. D:\\Zdjecia", "status.ready": "Gotowe." }', (New-Object System.Text.UTF8Encoding $false))
 $app = Join-Path $PSScriptRoot '..\RoboGo.ps1'
 . $app -NoUI
+$workingLogsBefore = @(Get-ChildItem -LiteralPath (Get-RoboLogDir) -Filter '*.log' -File).Count
 
 function Get-CommandText {
     # Rebuilds the command from the tape: a piece with a right margin ends a token.
@@ -61,6 +67,40 @@ function Assert-Rendered {
         Write-Host "[--] $Name (skipped: the Windows session is locked or switched away, so nothing is drawn)"
     }
 }
+function Save-ElementPng {
+    # Renders an element that is not on screen (the help panel lives in a closed popup).
+    param($Element, [string]$Path, [double]$Scale = 1.5)
+    $Element.Measure((New-Object System.Windows.Size ([double]::PositiveInfinity, [double]::PositiveInfinity)))
+    $size = $Element.DesiredSize
+    $Element.Arrange((New-Object System.Windows.Rect $size))
+    $Element.UpdateLayout()
+    $w = [int][math]::Ceiling($size.Width * $Scale)
+    $h = [int][math]::Ceiling($size.Height * $Scale)
+    $bitmap = New-Object System.Windows.Media.Imaging.RenderTargetBitmap ($w, $h, (96 * $Scale), (96 * $Scale), [System.Windows.Media.PixelFormats]::Pbgra32)
+    $bitmap.Render($Element)
+    $encoder = New-Object System.Windows.Media.Imaging.PngBitmapEncoder
+    $encoder.Frames.Add([System.Windows.Media.Imaging.BitmapFrame]::Create($bitmap))
+    $stream = [System.IO.File]::Create($Path)
+    try { $encoder.Save($stream) } finally { $stream.Dispose() }
+}
+function Get-ClippedControls {
+    # Names of visible controls that stick out of the window content area.
+    param($UI)
+    $area = New-Object System.Windows.Rect (-0.5, -0.5, ($UI.Root.ActualWidth + 1), ($UI.Root.ActualHeight + 1))
+    $bad = New-Object System.Collections.Generic.List[string]
+    foreach ($name in $script:RoboGoControls) {
+        $control = $UI[$name]
+        if ([object]::ReferenceEquals($control, $UI.Root)) { continue }
+        if (-not ($control -is [System.Windows.FrameworkElement])) { continue }
+        if ((-not $control.IsVisible) -or (-not $control.IsDescendantOf($UI.Root))) { continue }
+        $box = $control.TransformToAncestor($UI.Root).TransformBounds((New-Object System.Windows.Rect (0, 0, $control.ActualWidth, $control.ActualHeight)))
+        if (-not $area.Contains($box)) { $bad.Add($name) }
+    }
+    return ($bad -join ' ')
+}
+function Get-WorkingLogCount {
+    return @(Get-ChildItem -LiteralPath (Get-RoboLogDir) -Filter '*.log' -File).Count
+}
 function Step-UntilIdle {
     # Plays the role of the UI timer until the job is over.
     param([int]$TimeoutSec = 60)
@@ -84,6 +124,66 @@ try {
     Assert-Equal 'False' $ui.BtnCancel.IsEnabled 'window: cancel is off while idle'
     Assert-Equal 'Collapsed' $ui.TxtProblem.Visibility 'preview: empty paths do not nag before the first run'
 
+    # --- compact layout ---
+    Assert-True ($ui.Window.Width -le 760) 'size: the default width is at most 760'
+    Assert-True ($ui.Window.Height -le 620) 'size: the default height is at most 620'
+    Assert-Equal 'PATHS|OPTIONS|COMMAND|PROGRESS' (($ui.LblPaths.Text, $ui.LblOptions.Text, $ui.LblCommand.Text, $ui.LblProgress.Text) -join '|') 'rail: section names without numbers'
+    Assert-Equal 'e.g. D:\Photos' $ui.TxtSource.Tag 'placeholder: FROM shows an example while empty'
+    Assert-Equal 'e.g. \\nas\backup\Photos' $ui.TxtDest.Tag 'placeholder: TO'
+    Assert-Equal 'e.g. *.tmp; thumbs.db' $ui.TxtXF.Tag 'placeholder: SKIP FILES'
+    Assert-Equal 'e.g. node_modules; .git' $ui.TxtXD.Tag 'placeholder: SKIP FOLDERS'
+    Assert-Equal 'e.g. *.jpg /MAXAGE:7' $ui.TxtExtra.Tag 'placeholder: EXTRA'
+    Assert-Equal 'Collapsed' $ui.TxtModeHint.Visibility 'mode: no hint line for a plain copy'
+
+    # --- language ---
+    Assert-Equal 'EN' $ui.BtnLang.Content 'language: the button shows the current language'
+    Assert-Equal 'FROM' $ui.LblFrom.Text 'language: English labels at first'
+    Switch-RoboGoLanguage
+    Assert-Equal 'XX' $ui.BtnLang.Content 'language: a click moves to the next language'
+    Assert-Equal 'OD' $ui.LblFrom.Text 'language: labels come from the language file'
+    Assert-Equal 'np. D:\Zdjecia' $ui.TxtSource.Tag 'language: placeholders too'
+    Assert-Equal 'TO' $ui.LblTo.Text 'language: texts the file does not have stay English'
+    Assert-Equal 'Gotowe.' $ui.TxtStatus.Text 'language: the idle status follows'
+    Assert-Equal 'xx' (Read-RoboSettings).Language 'language: the choice is saved'
+    Switch-RoboGoLanguage
+    Assert-Equal 'EN' $ui.BtnLang.Content 'language: after the last language it is English again'
+    Assert-Equal 'FROM' $ui.LblFrom.Text 'language: and the labels are back'
+    Assert-Equal 'en' (Read-RoboSettings).Language 'language: saved again'
+
+    # --- the log box keeps the newest lines only ---
+    foreach ($i in 1..7000) { Add-RoboGoLog ('line ' + $i) }
+    Update-RoboGoLogView
+    $shown = @($ui.TxtLog.Text -split [Environment]::NewLine | Where-Object { $_ -ne '' })
+    Assert-Equal 5000 $shown.Count 'log box: trimmed to the newest 5,000 lines once it passes 6,000'
+    Assert-Equal 'line 2001|line 7000' ($shown[0] + '|' + $shown[$shown.Count - 1]) 'log box: the oldest lines go, the newest stay'
+    Clear-RoboGoLog
+    Assert-Equal '' $ui.TxtLog.Text 'log box: can be cleared'
+
+    # --- help: useful switches and setups ---
+    Assert-Equal @(Get-RoboHelpSwitches).Count $ui.HelpSwitches.Children.Count 'help: one row per switch'
+    Assert-Equal @(Get-RoboHelpSetups).Count $ui.HelpSetups.Children.Count 'help: one row per setup'
+    $rowJ = @($ui.HelpSwitches.Children) | Where-Object { $_.Tag -eq '/J' } | Select-Object -First 1
+    $rowFft = @($ui.HelpSwitches.Children) | Where-Object { $_.Tag -eq '/FFT' } | Select-Object -First 1
+    $rowJ.IsChecked = $true
+    Assert-Equal '/J' $ui.TxtExtra.Text 'help: ticking a switch adds it to EXTRA'
+    Assert-True ((Get-CommandText $ui) -like '* /J') 'help: and the command follows'
+    $rowJ.IsChecked = $false
+    Assert-Equal '' $ui.TxtExtra.Text 'help: unticking removes it'
+    $ui.TxtExtra.Text = '*.png /fft'
+    Assert-Equal 'True|False' ([string]$rowFft.IsChecked + '|' + [string]$rowJ.IsChecked) 'help: the boxes follow what is typed in EXTRA'
+    Invoke-RoboGoSetup 'setup.big'
+    Assert-Equal '1|*.png /J' ($ui.TxtThreads.Text + '|' + $ui.TxtExtra.Text) 'setup: sets THREADS and swaps the setup switches, the rest of EXTRA stays'
+    Invoke-RoboGoSetup 'setup.nas'
+    Assert-Equal '8|True|*.png /FFT' ($ui.TxtThreads.Text + '|' + [string]$ui.ChkRestart.IsChecked + '|' + $ui.TxtExtra.Text) 'setup: NAS turns on Restartable and /FFT'
+    Save-ElementPng $ui.HelpPanel (Join-Path $shots 'ui-help.png')
+    Assert-Rendered (Join-Path $shots 'ui-help.png') 'render: the help panel is drawn'
+    Invoke-RoboGoSetup 'setup.default'
+    Assert-Equal '8|False|*.png' ($ui.TxtThreads.Text + '|' + [string]$ui.ChkRestart.IsChecked + '|' + $ui.TxtExtra.Text) 'setup: the default one undoes the others'
+    $ui.TxtExtra.Text = ''
+    $ui.TxtExtra.Text = '/IPG:50'
+    Assert-Equal 'Extra switches: /IPG only works with 1 thread. Set THREADS to 1.' $ui.TxtProblem.Text 'help: a switch that clashes with THREADS says so at once'
+    $ui.TxtExtra.Text = ''
+
     # --- live preview ---
     $ui.TxtSource.Text = 'C:\src dir\'
     $ui.TxtDest.Text = 'D:\'
@@ -96,13 +196,13 @@ try {
     Assert-Equal 'robocopy "C:\src dir" D:\ /E /MT:8 /R:2 /W:5 /XF *.tmp' (Get-CommandText $ui) 'preview: follows check boxes and lists'
     $ui.ChkJunction.IsChecked = $true
     $ui.TxtXF.Text = ''
-    Assert-True ($ui.TxtModeHint.Text -like 'Copy adds*') 'mode: copy explains itself'
 
     # --- destructive mode ---
     $danger = $ui.Window.FindResource('Danger')
     $ui.RbMirror.IsChecked = $true
     Assert-True ((Get-CommandText $ui) -like '* /MIR *') 'mode: mirror adds /MIR'
     Assert-True ($ui.TxtModeHint.Text -like 'Mirror deletes*') 'mode: mirror shows its warning'
+    Assert-Equal 'Visible' $ui.TxtModeHint.Visibility 'mode: the warning line appears'
     Assert-Equal 'False' $ui.ChkSub.IsEnabled 'mode: mirror locks the subfolders box'
     $mir = @($ui.CmdPanel.Children) | Where-Object { $_.Text -eq '/MIR' } | Select-Object -First 1
     Assert-True ([object]::ReferenceEquals($mir.Foreground, $danger)) 'mode: /MIR is drawn in the danger colour'
@@ -113,6 +213,8 @@ try {
     $ui.TxtXF.Text = '*.tmp; thumbs.db'
     Save-WindowPng $ui (Join-Path $shots 'ui-mirror.png')
     Assert-Rendered (Join-Path $shots 'ui-mirror.png') 'render: the mirror state is drawn'
+    Assert-Equal '' (Get-ClippedControls $ui) 'size: nothing is clipped at the default size, even with the warning line and a two-line command'
+    Assert-True ($ui.TxtLog.ActualHeight -ge 60) 'size: the log box keeps at least 60 units'
 
     # --- hiding and showing the log (the window is shown off screen since the render) ---
     $tall = $ui.Window.ActualHeight
@@ -165,7 +267,10 @@ try {
     Assert-True ($ui.TxtLog.Text -like '> robocopy *') 'run: the log starts with the command'
     Assert-True ($ui.TxtLog.Text -like '*g.bin*') 'run: the log shows the copied files'
     Assert-Equal 'True' $ui.BtnRun.IsEnabled 'run: inputs are unlocked afterwards'
-    Assert-Equal 'True' $ui.BtnOpenLog.IsEnabled 'run: the log file can be opened'
+    Assert-Equal 'False' $ui.ChkKeepLog.IsChecked 'logs: keeping log files is off by default'
+    Assert-Equal 'Collapsed' $ui.BtnOpenLog.Visibility 'logs: no OPEN LOG without a kept file'
+    Assert-Equal $workingLogsBefore (Get-WorkingLogCount) 'logs: the working log is gone when the job is over'
+    Assert-True (-not (Test-Path -LiteralPath (Get-RoboKeptLogDir))) 'logs: nothing is kept'
     Save-WindowPng $ui (Join-Path $shots 'ui-done.png')
     Assert-Rendered (Join-Path $shots 'ui-done.png') 'render: the finished state is drawn'
 
@@ -209,6 +314,8 @@ try {
     $ui.TxtDest.Text = Join-Path $root 'dst4'
     $ui.TxtExtra.Text = ''
     $ui.ChkScan.IsChecked = $false
+    $ui.ChkKeepLog.IsChecked = $true
+    Assert-Equal 'True' (Read-RoboSettings).KeepLog 'logs: ticking Keep log file is saved'
     Start-RoboGoRun
     Assert-Equal 'Run' $script:RoboGo.Phase 'no scan: goes straight to the run'
     Assert-Equal 'True' $ui.Bar.IsIndeterminate 'no scan: the bar sweeps'
@@ -216,13 +323,28 @@ try {
     Assert-True ($ui.TxtStatus.Text -like 'Done. Copied 14 file(s)*') 'no scan: still finishes with a verdict'
     Assert-Equal '100%' $ui.TxtPercent.Text 'no scan: ends at 100%'
     Assert-Equal '14' $ui.TxtFiles.Text 'no scan: file counter without a total'
+    $keptLogs = @(Get-ChildItem -LiteralPath (Get-RoboKeptLogDir) -Filter '*.log' -File)
+    Assert-Equal 1 $keptLogs.Count 'logs: with Keep log file on, the log lands in the logs folder next to the program'
+    Assert-Equal 'Visible' $ui.BtnOpenLog.Visibility 'logs: OPEN LOG appears'
+    Assert-True ($ui.TxtLog.Text.Contains($keptLogs[0].FullName)) 'logs: the log box names the saved file'
+    Assert-Equal $workingLogsBefore (Get-WorkingLogCount) 'logs: and nothing stays in TEMP'
+    Assert-Equal '' (Get-ClippedControls $ui) 'size: nothing is clipped after a job either'
 
     $script:RoboGo.Timer.Stop()
     $ui.Window.Close()
+
+    # --- a new window picks up the saved choices ---
+    [void](Save-RoboSettings @{ Language = 'xx'; KeepLog = $true })
+    $second = New-RoboGoWindow
+    Initialize-RoboGoWindow $second
+    Assert-Equal 'XX|True|OD' ([string]$second.BtnLang.Content + '|' + [string]$second.ChkKeepLog.IsChecked + '|' + $second.LblFrom.Text) 'settings: language and Keep log file are restored at the next start'
+    $script:RoboGo.Timer.Stop()
+    [void](Set-RoboLanguage 'en')
     Write-Host ('       screenshots: ' + $shots)
 }
 finally {
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+    if (Test-Path -LiteralPath $env:ROBOGO_HOME) { Remove-Item -LiteralPath $env:ROBOGO_HOME -Recurse -Force }
 }
 
 exit (Complete-Tests 'Ui')
