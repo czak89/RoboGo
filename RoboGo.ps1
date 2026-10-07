@@ -105,10 +105,10 @@ $script:RoboText = @{
     'ui.helpSetupNote' = 'Click one to set THREADS, Restartable and its switches.'
 
     # example texts shown in empty fields
-    'ph.source'        = 'e.g. D:\Photos'
-    'ph.dest'          = 'e.g. \\nas\backup\Photos'
-    'ph.skipFiles'     = 'e.g. *.tmp; thumbs.db'
-    'ph.skipDirs'      = 'e.g. node_modules; .git'
+    'ph.source'        = 'e.g. C:\Users\<username>\Photos'
+    'ph.dest'          = 'e.g. \\nas\backup\Pictures'
+    'ph.skipFiles'     = 'e.g. *.tmp; thumbs.db; desktop.ini'
+    'ph.skipDirs'      = 'e.g. node_modules; .git; .temp; .cache'
     'ph.extra'         = 'e.g. *.jpg /MAXAGE:7'
 
     # tooltips

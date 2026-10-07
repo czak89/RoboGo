@@ -244,10 +244,10 @@ try {
     Assert-True ($ui.Window.Width -le 760) 'size: the default width is at most 760'
     Assert-True ($ui.Window.Height -le 620) 'size: the default height is at most 620'
     Assert-Equal 'PATHS|OPTIONS|COMMAND|PROGRESS' (($ui.LblPaths.Text, $ui.LblOptions.Text, $ui.LblCommand.Text, $ui.LblProgress.Text) -join '|') 'rail: section names without numbers'
-    Assert-Equal 'e.g. D:\Photos' $ui.TxtSource.Tag 'placeholder: FROM shows an example while empty'
-    Assert-Equal 'e.g. \\nas\backup\Photos' $ui.TxtDest.Tag 'placeholder: TO'
-    Assert-Equal 'e.g. *.tmp; thumbs.db' $ui.TxtXF.Tag 'placeholder: SKIP FILES'
-    Assert-Equal 'e.g. node_modules; .git' $ui.TxtXD.Tag 'placeholder: SKIP FOLDERS'
+    Assert-Equal 'e.g. C:\Users\<username>\Photos' $ui.TxtSource.Tag 'placeholder: FROM shows an example while empty'
+    Assert-Equal 'e.g. \\nas\backup\Pictures' $ui.TxtDest.Tag 'placeholder: TO'
+    Assert-Equal 'e.g. *.tmp; thumbs.db; desktop.ini' $ui.TxtXF.Tag 'placeholder: SKIP FILES'
+    Assert-Equal 'e.g. node_modules; .git; .temp; .cache' $ui.TxtXD.Tag 'placeholder: SKIP FOLDERS'
     Assert-Equal 'e.g. *.jpg /MAXAGE:7' $ui.TxtExtra.Tag 'placeholder: EXTRA'
     Assert-Equal 'Collapsed' $ui.TxtModeHint.Visibility 'mode: no hint line for a plain copy'
 
@@ -601,6 +601,26 @@ try {
     Assert-Equal ($lastSource + '|cache|True') (($second.TxtSource.Text, $second.TxtXD.Text, [string]$second.RbCopy.IsChecked) -join '|') 'restore: the fields are back, and the mode is COPY although the last session ended on MIRROR'
     Assert-True (-not (Restore-RoboGoWindow $second $saved.Window)) 'placement: the off-screen spot of the test window is not taken over'
     $script:RoboGo.Timer.Stop()
+
+    # --- every language of the repository fits into the window ---
+    foreach ($langFile in @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot '..\lang') -Filter '*.json' -File | Where-Object { $_.BaseName -ne 'en' } | Sort-Object Name)) {
+        $code = $langFile.BaseName.ToLowerInvariant()
+        Copy-Item -LiteralPath $langFile.FullName -Destination (Join-Path $env:ROBOGO_HOME 'lang') -Force
+        $saved = Read-RoboSettings
+        $saved.Language = $code
+        [void](Save-RoboSettings $saved)
+        $local = New-RoboGoWindow
+        Initialize-RoboGoWindow $local
+        Assert-Equal $code.ToUpperInvariant() ([string]$local.BtnLang.Content) ('language ' + $code + ': the window starts in it')
+        Assert-True ($local.BtnRun.Content -cne 'RUN') ('language ' + $code + ': the buttons are translated')
+        $local.RbMirror.IsChecked = $true
+        $local.TxtSource.Text = 'D:\Photos\2026 Summer'
+        $local.TxtDest.Text = '\\nas\backup\Photos\2026 Summer'
+        Save-WindowPng $local (Join-Path $shots ('ui-' + $code + '.png'))
+        Assert-Equal '' (Get-ClippedControls $local) ('language ' + $code + ': nothing is clipped at the default size, with the warning line')
+        Save-ElementPng $local.HelpPanel (Join-Path $shots ('ui-help-' + $code + '.png'))
+        $script:RoboGo.Timer.Stop()
+    }
     [void](Set-RoboLanguage 'en')
     Write-Host ('       screenshots: ' + $shots)
 }
