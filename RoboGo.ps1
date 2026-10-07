@@ -840,6 +840,8 @@ function Get-RoboVerdict {
 # 3. Engine: start robocopy hidden, follow its log file, stop it.
 #    Progress comes from a /UNILOG file because that is real UTF-16. Robocopy's
 #    piped output is OEM code page text and turns many characters into "?".
+#    The file is a working file in TEMP: Close-RoboJobLog deletes it when the
+#    job is over, or moves it next to the program when the user keeps logs.
 # ============================================================================
 
 function Get-RoboLogDir {
@@ -854,15 +856,56 @@ function New-RoboLogPath {
     return (Join-Path (Get-RoboLogDir) ($stamp + '-' + $Kind.ToLowerInvariant() + '.log'))
 }
 
+function Get-RoboKeptLogDir {
+    # Where logs go when the user wants to keep them: next to the program.
+    return (Join-Path $script:RoboDataDir 'logs')
+}
+
 function Remove-RoboOldLogs {
-    # Keeps the newest log files in the log folder and deletes the rest. CmdletBinding makes
-    # a mistyped parameter an error instead of a silent run against the default folder.
+    # Deletes log files older than the limit from the working folder in TEMP and from the
+    # kept logs. CmdletBinding makes a mistyped parameter an error instead of a silent run
+    # against the default folders.
     [CmdletBinding()]
-    param([int]$Keep = 20, [string]$Directory = (Get-RoboLogDir))
-    $files = @(Get-ChildItem -LiteralPath $Directory -Filter '*.log' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending)
-    for ($i = $Keep; $i -lt $files.Count; $i++) {
-        Remove-Item -LiteralPath $files[$i].FullName -Force -ErrorAction SilentlyContinue
+    param([int]$Days = 30, [string[]]$Directory = @((Get-RoboLogDir), (Get-RoboKeptLogDir)))
+    $limit = (Get-Date).AddDays(-$Days)
+    foreach ($dir in $Directory) {
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+        foreach ($file in @(Get-ChildItem -LiteralPath $dir -Filter '*.log' -File -ErrorAction SilentlyContinue)) {
+            if ($file.LastWriteTime -lt $limit) { Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue }
+        }
     }
+}
+
+function Close-RoboJobLog {
+    # Call when a job is over. The working log in TEMP is deleted, or with -Keep moved to the
+    # logs folder next to the program. Returns the path of the kept file, or '' when nothing
+    # was kept. A file that cannot be moved or deleted is left to the 30-day cleanup.
+    param([hashtable]$Job, [switch]$Keep)
+    $kept = ''
+    if ($null -ne $Job.Stream) {
+        $Job.Stream.Dispose()
+        $Job.Stream = $null
+    }
+    if (Test-Path -LiteralPath $Job.LogPath) {
+        try {
+            if ($Keep) {
+                $dir = Get-RoboKeptLogDir
+                if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+                $target = Join-Path $dir ([System.IO.Path]::GetFileName($Job.LogPath))
+                Move-Item -LiteralPath $Job.LogPath -Destination $target -Force
+                $Job.LogPath = $target
+                $kept = $target
+            }
+            else {
+                Remove-Item -LiteralPath $Job.LogPath -Force
+            }
+        }
+        catch {
+            # the program folder is not writable: the log stays where robocopy wrote it
+            if ($Keep) { $kept = $Job.LogPath }
+        }
+    }
+    return $kept
 }
 
 function Start-RoboJob {

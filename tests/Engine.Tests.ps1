@@ -1,8 +1,12 @@
 # Integration tests: real robocopy runs inside a fresh folder under %TEMP%.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'TestHarness.ps1')
+# Kept logs go to the program folder. ROBOGO_HOME points the app at a throwaway one.
+$env:ROBOGO_HOME = Join-Path ([System.IO.Path]::GetTempPath()) ('RoboGoHomeTest-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $env:ROBOGO_HOME | Out-Null
 $app = Join-Path $PSScriptRoot '..\RoboGo.ps1'
 . $app -NoUI
+$workingLogsBefore = @(Get-ChildItem -LiteralPath (Get-RoboLogDir) -Filter '*.log' -File).Count
 
 # --- speed meter (pure) ---
 $m = New-RoboSpeedMeter
@@ -14,22 +18,36 @@ Assert-Equal 1500 (Get-RoboSpeed $m) 'speed: bytes per second over the window'
 Add-RoboSpeedSample $m 3000 20
 Assert-Equal 0 (Get-RoboSpeed $m) 'speed: drops to zero when nothing moves'
 
-# --- log housekeeping ---
+# --- log housekeeping: files older than the limit go, everything else stays ---
+function New-AgedFile {
+    param([string]$Path, [int]$DaysOld)
+    Set-Content -LiteralPath $Path -Value 'x'
+    (Get-Item -LiteralPath $Path).LastWriteTime = (Get-Date).AddDays(-$DaysOld)
+}
 $logDir = Join-Path ([System.IO.Path]::GetTempPath()) ('RoboGoLogTest-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 try {
-    foreach ($i in 1..5) {
-        $file = Join-Path $logDir ('job' + $i + '.log')
-        Set-Content -LiteralPath $file -Value 'x'
-        (Get-Item -LiteralPath $file).LastWriteTime = (Get-Date).AddMinutes(-$i)
-    }
-    Set-Content -LiteralPath (Join-Path $logDir 'notes.txt') -Value 'x'
-    Remove-RoboOldLogs -Keep 2 -Directory $logDir
-    Assert-Equal 'job1.log|job2.log|notes.txt' ((Get-ChildItem -LiteralPath $logDir | Sort-Object Name | ForEach-Object { $_.Name }) -join '|') 'logs: only the newest log files are kept, other files are left alone'
+    New-AgedFile (Join-Path $logDir 'old.log') 31
+    New-AgedFile (Join-Path $logDir 'recent.log') 29
+    New-AgedFile (Join-Path $logDir 'old.txt') 40
+    Remove-RoboOldLogs -Days 30 -Directory $logDir
+    Assert-Equal 'old.txt|recent.log' ((Get-ChildItem -LiteralPath $logDir | Sort-Object Name | ForEach-Object { $_.Name }) -join '|') 'cleanup: log files older than 30 days are deleted, other files are left alone'
 }
 finally {
     Remove-Item -LiteralPath $logDir -Recurse -Force
 }
+Assert-Equal (Join-Path $env:ROBOGO_HOME 'logs') (Get-RoboKeptLogDir) 'cleanup: kept logs live in the logs folder next to the program'
+New-Item -ItemType Directory -Force -Path (Get-RoboKeptLogDir) | Out-Null
+New-AgedFile (Join-Path (Get-RoboKeptLogDir) 'ancient.log') 45
+New-AgedFile (Join-Path (Get-RoboKeptLogDir) 'fresh.log') 2
+Remove-RoboOldLogs
+Assert-Equal 'fresh.log' ((Get-ChildItem -LiteralPath (Get-RoboKeptLogDir) | ForEach-Object { $_.Name }) -join '|') 'cleanup: without arguments it covers the kept logs, with a limit of 30 days'
+Remove-Item -LiteralPath (Join-Path (Get-RoboKeptLogDir) 'fresh.log') -Force
+
+# --- the help panel only offers switches this robocopy knows ---
+$helpText = (& $script:RoboExe '/?' | Out-String)
+$unknown = @(Get-RoboHelpSwitches | Where-Object { $_.Token.StartsWith('/') } | Where-Object { $helpText -notmatch ('(?im)^\s*' + [regex]::Escape(($_.Token -split ':')[0]) + '[\s:\[]') } | ForEach-Object { $_.Token })
+Assert-Equal '' ($unknown -join ' ') 'help: every switch in the help panel is listed by robocopy /?'
 
 # --- helpers ---
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ('RoboGoTest-' + [guid]::NewGuid().ToString('N'))
@@ -80,6 +98,10 @@ try {
     Assert-Equal $want.Files $job.State.Summary.Files.Copied 'scan: number of files to copy'
     Assert-Equal $want.Bytes $job.State.Summary.Bytes.Copied 'scan: number of bytes to copy'
     Assert-True (-not (Test-Path -LiteralPath $dst)) 'scan: nothing is written'
+    $working = $job.LogPath
+    Assert-True (Test-Path -LiteralPath $working) 'log: the working log exists until the job is closed'
+    Assert-Equal '' (Close-RoboJobLog $job) 'log: closing without -Keep returns nothing'
+    Assert-True (-not (Test-Path -LiteralPath $working)) 'log: and deletes the working log'
 
     # --- run on one thread, slowed down so that progress can be observed ---
     $o = New-TestOptions $src $dst
@@ -105,11 +127,17 @@ try {
     $ordered = $true
     for ($i = 1; $i -lt $seen.Count; $i++) { if ($seen[$i] -lt $seen[$i - 1]) { $ordered = $false } }
     Assert-True $ordered 'run: progress never goes backwards'
-    Assert-True (Test-Path -LiteralPath $job.LogPath) 'run: the log file is kept'
+    $working = $job.LogPath
+    $kept = Close-RoboJobLog $job -Keep
+    Assert-Equal (Join-Path (Get-RoboKeptLogDir) ([System.IO.Path]::GetFileName($working))) $kept 'log: -Keep moves the log to the logs folder next to the program'
+    Assert-True (-not (Test-Path -LiteralPath $working)) 'log: nothing stays in the temp folder'
+    Assert-Equal $kept $job.LogPath 'log: the job points at the kept file'
+    Assert-True ([System.IO.File]::ReadAllText($kept, [System.Text.Encoding]::Unicode).Contains($odd)) 'log: the kept file is the full UTF-16 log'
 
     # --- second run: nothing to do ---
     $job = Start-RoboJob (New-TestOptions $src $dst) 'Run'
     [void](Wait-RoboJob $job)
+    [void](Close-RoboJobLog $job)
     Assert-Equal 0 $job.ExitCode 'rerun: exit code 0'
     Assert-Equal 0 $job.State.Summary.Files.Copied 'rerun: nothing copied'
     Assert-True ((Get-RoboVerdict -ExitCode $job.ExitCode -Summary $job.State.Summary).Text -like 'Nothing to copy*') 'rerun: verdict says so'
@@ -118,6 +146,7 @@ try {
     $dstMt = Join-Path $root 'dst mt'
     $job = Start-RoboJob (New-TestOptions $src $dstMt 8) 'Run'
     [void](Wait-RoboJob $job)
+    [void](Close-RoboJobLog $job)
     Assert-Equal $want.Bytes $job.State.Summary.Bytes.Copied 'threads: summary bytes'
     Assert-Equal $want.Files $job.State.CompletedFiles 'threads: every file is counted'
     Assert-Equal $want.Bytes $job.State.CompletedBytes 'threads: completed bytes match'
@@ -130,6 +159,7 @@ try {
     $o.Mode = 'Mirror'
     $job = Start-RoboJob $o 'DryRun'
     [void](Wait-RoboJob $job)
+    [void](Close-RoboJobLog $job)
     Assert-True (Test-Path -LiteralPath (Join-Path $dst 'extra.txt')) 'dry run: deletes nothing'
     Assert-Equal 2 $job.State.ExtraFiles 'dry run: lists the extra files'
     Assert-Equal 1 $job.State.ExtraDirs 'dry run: lists the extra folder'
@@ -137,6 +167,7 @@ try {
     Assert-True ($v.Text -like 'Dry run, nothing was changed.*3 extra item(s) would be deleted*') 'dry run: verdict announces the deletions'
     $job = Start-RoboJob $o 'Run'
     [void](Wait-RoboJob $job)
+    [void](Close-RoboJobLog $job)
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $dst 'extra.txt'))) 'mirror: the extra file is deleted'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $dst 'extra dir'))) 'mirror: the extra folder is deleted'
     Assert-Equal 2 ($job.ExitCode -band 2) 'mirror: the exit code reports extras'
@@ -147,6 +178,7 @@ try {
     try {
         $job = Start-RoboJob (New-TestOptions $src $dst) 'Run'
         [void](Wait-RoboJob $job)
+        [void](Close-RoboJobLog $job)
     }
     finally {
         $lock.Close()
@@ -160,6 +192,7 @@ try {
     # --- missing source: fatal ---
     $job = Start-RoboJob (New-TestOptions (Join-Path $root 'nope') $dst) 'Run'
     [void](Wait-RoboJob $job)
+    [void](Close-RoboJobLog $job)
     Assert-Equal 16 $job.ExitCode 'missing source: exit code 16'
     Assert-True ($null -eq $job.State.Summary) 'missing source: no summary'
     Assert-True ($job.State.Errors -ge 1) 'missing source: the error line is counted'
@@ -184,9 +217,12 @@ try {
     Assert-True $job.Done 'cancel: the job ends after Stop-RoboJob'
     Assert-True ((Get-TreeStats $dstCancel).Bytes -lt $want.Bytes) 'cancel: the copy really stopped early'
     Assert-Equal 'warn' (Get-RoboVerdict -ExitCode $job.ExitCode -Summary $job.State.Summary -Cancelled).Level 'cancel: verdict is a warning'
+    [void](Close-RoboJobLog $job)
+    Assert-Equal $workingLogsBefore (@(Get-ChildItem -LiteralPath (Get-RoboLogDir) -Filter '*.log' -File).Count) 'log: the suite leaves no working log behind'
 }
 finally {
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
+    if (Test-Path -LiteralPath $env:ROBOGO_HOME) { Remove-Item -LiteralPath $env:ROBOGO_HOME -Recurse -Force }
 }
 
 exit (Complete-Tests 'Engine')
