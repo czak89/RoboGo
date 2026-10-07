@@ -870,7 +870,8 @@ function Update-RoboSendTo {
 
 # The Windows calls PowerShell has no cmdlet for, in one small C# type (C# 5, so that the
 # compiler of Windows PowerShell 5.1 takes it): dark title bar, free space of a folder on
-# any drive or share, flashing taskbar button, and the identity of the window on the taskbar.
+# any drive or share, flashing taskbar button, the sound of a sound-scheme event, and the
+# identity of the window on the taskbar.
 $script:RoboNativeSource = @'
 using System;
 using System.Runtime.InteropServices;
@@ -918,6 +919,20 @@ namespace RoboGo
             info.uCount = uint.MaxValue;
             info.dwTimeout = 0;
             FlashWindowEx(ref info);
+        }
+
+        [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool PlaySound(string name, IntPtr module, uint flags);
+
+        // Plays the sound the Windows sound scheme has for an event such as "SystemAsterisk".
+        // The sound comes from this process, in the System Sounds entry of the volume mixer.
+        // An event without a sound stays silent. The call does not wait for the sound to end,
+        // so true only means that Windows took the request.
+        public static bool PlayEvent(string name)
+        {
+            // SND_ASYNC 0x1, SND_NODEFAULT 0x2, SND_ALIAS 0x10000, SND_SYSTEM 0x200000
+            return PlaySound(name, IntPtr.Zero, 0x1 | 0x2 | 0x10000 | 0x200000);
         }
 
         // The property store of a window holds what the taskbar needs to treat the window
@@ -2291,6 +2306,29 @@ function Confirm-RoboGo {
     return ($answer -eq [System.Windows.MessageBoxResult]::Yes)
 }
 
+function Get-RoboSoundName {
+    # The event of the Windows sound scheme that fits the end of a job.
+    param([string]$Level)
+    if ($Level -eq 'error') { return 'SystemHand' }
+    if ($Level -eq 'warn') { return 'SystemExclamation' }
+    return 'SystemAsterisk'
+}
+
+function Invoke-RoboSound {
+    # Plays the sound the Windows sound scheme has for an event, without waiting for it to
+    # end. RoboGo plays it itself: the SystemSounds class of .NET only hands a request to
+    # Windows (MessageBeep), and that request can report success without any sound coming out.
+    # The tests replace this function.
+    param([string]$Name)
+    try {
+        Initialize-RoboNative
+        return [RoboGo.Native]::PlayEvent($Name)
+    }
+    catch {
+        return $false
+    }
+}
+
 function Invoke-RoboAttention {
     # A job ended while the user was elsewhere: the taskbar button flashes until the window
     # is looked at, and a Windows system sound plays. The tests replace this function.
@@ -2300,12 +2338,7 @@ function Invoke-RoboAttention {
         if ($Handle -ne [IntPtr]::Zero) { [RoboGo.Native]::Flash($Handle) }
     }
     catch { }
-    try {
-        if ($Level -eq 'error') { [System.Media.SystemSounds]::Hand.Play() }
-        elseif ($Level -eq 'warn') { [System.Media.SystemSounds]::Exclamation.Play() }
-        else { [System.Media.SystemSounds]::Asterisk.Play() }
-    }
-    catch { }
+    [void](Invoke-RoboSound (Get-RoboSoundName $Level))
 }
 
 function Set-RoboGoTaskbar {

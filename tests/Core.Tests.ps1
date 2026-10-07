@@ -310,5 +310,24 @@ $o.Threads = 8
 $refused = @($setups | Where-Object { $o.Threads = $_.Threads; $o.Extra = $_.Extra; (Test-RoboOptions $o -SkipFileSystem).Count -gt 0 })
 Assert-Equal 0 $refused.Count 'help: every setup passes the validation'
 
+# --- done sound ---
+Assert-Equal 'SystemHand' (Get-RoboSoundName 'error') 'done sound: an error plays the Windows error sound'
+Assert-Equal 'SystemExclamation' (Get-RoboSoundName 'warn') 'done sound: a warning plays the Windows warning sound'
+Assert-Equal 'SystemAsterisk' (Get-RoboSoundName 'ok') 'done sound: a good end plays the Windows information sound'
+Assert-Equal 'SystemAsterisk' (Get-RoboSoundName '') 'done sound: an unknown level plays the information sound'
+# an event name Windows does not know has no sound, so this call is silent
+Assert-Equal 'True' (Invoke-RoboSound 'RoboGoNoSuchSound') 'done sound: the call into Windows works'
+$script:Played = New-Object System.Collections.Generic.List[string]
+function Invoke-RoboSound {
+    param([string]$Name)
+    $script:Played.Add($Name)
+    return $true
+}
+Invoke-RoboAttention ([IntPtr]::Zero) 'error'
+Invoke-RoboAttention ([IntPtr]::Zero) 'ok'
+Assert-Equal 'SystemHand,SystemAsterisk' ($script:Played -join ',') 'done sound: the done signal plays the sound of its level'
+$appSource = [System.IO.File]::ReadAllText($app)
+Assert-True ($appSource -notmatch '\[System\.Media\.SystemSounds\]|MessageBeep\(') 'done sound: nothing asks Windows to beep, a request that can succeed without a sound'
+
 Remove-Item -LiteralPath $env:ROBOGO_HOME -Recurse -Force
 exit (Complete-Tests 'Core')

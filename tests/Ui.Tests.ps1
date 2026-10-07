@@ -31,6 +31,11 @@ function Invoke-RoboAttention {
     param($Handle, [string]$Level)
     $script:Signals.Add($Level)
 }
+function Invoke-RoboSound {
+    # second line of defence: no test of the window may ever play a sound
+    param([string]$Name)
+    return $true
+}
 $script:FakeFree = $null
 $script:RealFreeSpace = ${function:Get-RoboFreeSpace}
 function Get-RoboFreeSpace {
