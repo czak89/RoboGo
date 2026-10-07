@@ -8,6 +8,9 @@
     settings.json also holds the limits for the log cleanup (LogMaxDays, LogFileMaxMB, LogMaxMB).
 .PARAMETER NoUI
     Only define the functions. The test scripts dot-source the file this way.
+.PARAMETER Source
+    A folder to put into the FROM field at start. The launcher passes what Explorer's
+    Send to menu hands it in the environment variable ROBOGO_SOURCE instead.
 .PARAMETER SelfTest
     Run the built-in sanity checks, load the window without showing it and exit with the
     number of failed checks.
@@ -15,7 +18,8 @@
 [CmdletBinding()]
 param(
     [switch]$NoUI,
-    [switch]$SelfTest
+    [switch]$SelfTest,
+    [string]$Source = ''
 )
 
 Set-StrictMode -Version Latest
@@ -35,6 +39,9 @@ $script:RoboDataDir = $PSScriptRoot
 if (-not [string]::IsNullOrEmpty($env:ROBOGO_HOME)) { $script:RoboDataDir = $env:ROBOGO_HOME }
 $script:RoboLanguage = 'en'
 $script:RoboTextOverlay = @{}
+# The identity of the window on the taskbar. A pin made from the running window carries it
+# too, which is what makes pin and window share one button.
+$script:RoboAppId = 'Czak89.RoboGo'
 # Limits for the log cleanup at every start: age in days, megabytes for one log, megabytes
 # for all logs of a folder. settings.json can change them under the same names.
 $script:RoboLogLimits = @{ LogMaxDays = 30; LogFileMaxMB = 50; LogMaxMB = 100 }
@@ -962,7 +969,7 @@ namespace RoboGo
             key.fmtid = AppModel;
             key.pid = pid;
             PROPVARIANT value = new PROPVARIANT();
-            if (text != null)
+            if (!String.IsNullOrEmpty(text))
             {
                 value.vt = 31;
                 value.pointer = Marshal.StringToCoTaskMemUni(text);
@@ -1234,14 +1241,15 @@ function Update-RoboProgress {
 }
 
 function Get-RoboFailureLines {
-    # One line per failure: what robocopy was doing with which path, the error code, and
-    # the message of Windows.
+    # One text per failure, on two short lines so that nothing important ends up beyond the
+    # right edge of the log box: what robocopy was doing with which path, and indented
+    # below it the error code and the message of Windows.
     param([hashtable]$State)
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($failure in $State.Failures) {
-        $line = $failure.What + '   [' + $failure.Code + ']'
-        if ($failure.Detail -ne '') { $line += '   ' + $failure.Detail }
-        $lines.Add($line)
+        $second = '    ' + $failure.Code
+        if ($failure.Detail -ne '') { $second += '  ' + $failure.Detail }
+        $lines.Add($failure.What + [Environment]::NewLine + $second)
     }
     return , $lines.ToArray()
 }
@@ -1565,20 +1573,21 @@ function Get-RoboSpeed {
 # ============================================================================
 
 $script:RoboGoControls = @(
-    'Root', 'LblSubtitle', 'TxtVersion', 'BtnLang',
-    'LblPaths', 'LblFrom', 'TxtSource', 'BtnSource', 'LblTo', 'TxtDest', 'BtnDest',
+    'Root', 'LblSubtitle', 'TxtVersion', 'BtnSendTo', 'BtnLang',
+    'LblPaths', 'LblFrom', 'TxtSource', 'BtnRecentSource', 'BtnSource', 'LblTo', 'TxtDest', 'BtnRecentDest', 'BtnDest',
+    'RecentPopup', 'RecentPanel', 'RecentList',
     'LblOptions', 'RbCopy', 'RbMirror', 'RbMove', 'LblThreads', 'TxtThreads', 'LblRetries', 'TxtRetries', 'LblWait', 'TxtWait',
     'TxtModeHint', 'ChkSub', 'ChkJunction', 'ChkNewer', 'ChkRestart',
     'LblSkipFiles', 'TxtXF', 'LblSkipDirs', 'TxtXD', 'LblExtra', 'TxtExtra', 'BtnHelp',
     'HelpPopup', 'HelpPanel', 'HelpScroll', 'LblHelpSetups', 'LblHelpSetupNote', 'HelpSetups', 'LblHelpSwitches', 'LblHelpNote', 'HelpSwitches',
-    'LblCommand', 'BtnCopyCmd', 'TapeEdge', 'CmdPanel', 'TxtProblem', 'ChkScan', 'ChkKeepLog', 'BtnDry', 'BtnRun', 'BtnCancel',
-    'LblProgress', 'BtnToggleLog', 'BtnCopyLog', 'BtnOpenLog', 'Bar', 'TxtPercent',
+    'LblCommand', 'BtnCopyCmd', 'BtnTape', 'TapeEdge', 'TapeClip', 'TapeMore', 'CmdPanel', 'TxtProblem', 'ChkScan', 'ChkKeepLog', 'BtnDry', 'BtnRun', 'BtnCancel',
+    'LblProgress', 'BtnToggleLog', 'BtnCopyLog', 'BtnFailed', 'BtnOpenLog', 'Bar', 'TxtPercent',
     'LblFiles', 'TxtFiles', 'LblData', 'TxtData', 'LblSpeed', 'TxtSpeed', 'LblEta', 'TxtEta',
     'TxtCurrent', 'TxtStatus', 'TxtLog'
 )
 # Controls that are locked while a job runs.
 $script:RoboGoInputs = @(
-    'TxtSource', 'BtnSource', 'TxtDest', 'BtnDest', 'RbCopy', 'RbMirror', 'RbMove',
+    'TxtSource', 'BtnRecentSource', 'BtnSource', 'TxtDest', 'BtnRecentDest', 'BtnDest', 'RbCopy', 'RbMirror', 'RbMove',
     'ChkSub', 'ChkJunction', 'ChkNewer', 'ChkRestart', 'TxtThreads', 'TxtRetries', 'TxtWait',
     'TxtXF', 'TxtXD', 'TxtExtra', 'ChkScan', 'BtnDry', 'BtnRun', 'HelpPanel'
 )
@@ -1587,6 +1596,12 @@ $script:RoboGoInputs = @(
 $script:RoboGoTextMap = @(
     @('LblSubtitle', 'Text', 'ui.subtitle'),
     @('BtnLang', 'ToolTip', 'tip.language'),
+    @('BtnSendTo', 'Content', 'ui.sendTo'),
+    @('BtnSendTo', 'ToolTip', 'tip.sendTo'),
+    @('BtnRecentSource', 'ToolTip', 'tip.recent'),
+    @('BtnRecentDest', 'ToolTip', 'tip.recent'),
+    @('BtnTape', 'ToolTip', 'tip.tape'),
+    @('BtnFailed', 'ToolTip', 'tip.failed'),
     @('LblPaths', 'Text', 'ui.paths'),
     @('LblOptions', 'Text', 'ui.options'),
     @('LblCommand', 'Text', 'ui.command'),
@@ -1989,6 +2004,7 @@ function Get-RoboGoXaml {
         <TextBlock DockPanel.Dock="Left" Text="ROBOGO" FontSize="18" FontWeight="Bold" Foreground="{StaticResource Amber}"/>
         <TextBlock x:Name="LblSubtitle" DockPanel.Dock="Left" Margin="12,0,0,3" VerticalAlignment="Bottom" FontSize="11.5" Foreground="{StaticResource Dim}"/>
         <Button x:Name="BtnLang" DockPanel.Dock="Right" Style="{StaticResource Small}" MinWidth="34" VerticalAlignment="Center"/>
+        <Button x:Name="BtnSendTo" DockPanel.Dock="Right" Style="{StaticResource Small}" Margin="0,0,6,0" VerticalAlignment="Center" Foreground="{StaticResource Dim}"/>
         <TextBlock x:Name="TxtVersion" DockPanel.Dock="Right" Margin="0,0,10,3" VerticalAlignment="Bottom" FontSize="11" Foreground="{StaticResource Dim}"/>
       </DockPanel>
 
@@ -2004,6 +2020,7 @@ function Get-RoboGoXaml {
               <ColumnDefinition Width="Auto" SharedSizeGroup="Lbl"/>
               <ColumnDefinition Width="*"/>
               <ColumnDefinition Width="Auto"/>
+              <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <Grid.RowDefinitions>
               <RowDefinition Height="Auto"/>
@@ -2011,10 +2028,22 @@ function Get-RoboGoXaml {
             </Grid.RowDefinitions>
             <TextBlock x:Name="LblFrom" Style="{StaticResource Lbl}" Margin="0,0,10,0"/>
             <TextBox x:Name="TxtSource" Grid.Column="1" AllowDrop="True"/>
-            <Button x:Name="BtnSource" Grid.Column="2" Margin="6,0,0,0"/>
+            <Button x:Name="BtnRecentSource" Grid.Column="2" Margin="-1,0,0,0" Padding="7,4" IsEnabled="False">
+              <Path Data="M0,0 L4,4 L8,0" Stroke="{StaticResource Ink}" StrokeThickness="1.5" VerticalAlignment="Center"/>
+            </Button>
+            <Button x:Name="BtnSource" Grid.Column="3" Margin="6,0,0,0"/>
             <TextBlock x:Name="LblTo" Grid.Row="1" Style="{StaticResource Lbl}" Margin="0,6,10,0"/>
             <TextBox x:Name="TxtDest" Grid.Row="1" Grid.Column="1" Margin="0,6,0,0" AllowDrop="True"/>
-            <Button x:Name="BtnDest" Grid.Row="1" Grid.Column="2" Margin="6,6,0,0"/>
+            <Button x:Name="BtnRecentDest" Grid.Row="1" Grid.Column="2" Margin="-1,6,0,0" Padding="7,4" IsEnabled="False">
+              <Path Data="M0,0 L4,4 L8,0" Stroke="{StaticResource Ink}" StrokeThickness="1.5" VerticalAlignment="Center"/>
+            </Button>
+            <Button x:Name="BtnDest" Grid.Row="1" Grid.Column="3" Margin="6,6,0,0"/>
+            <Popup x:Name="RecentPopup" Grid.Column="1" Placement="Custom" StaysOpen="False" PopupAnimation="None">
+              <Border x:Name="RecentPanel" MinWidth="260" Background="{StaticResource Bg1}" BorderBrush="{StaticResource Amber}" BorderThickness="1" Padding="4,4,4,2"
+                      TextElement.Foreground="{StaticResource Ink}" TextElement.FontFamily="Cascadia Mono, Cascadia Code, Consolas" TextElement.FontSize="12.5">
+                <StackPanel x:Name="RecentList"/>
+              </Border>
+            </Popup>
           </Grid>
         </Grid>
       </Border>
@@ -2097,11 +2126,17 @@ function Get-RoboGoXaml {
           <StackPanel>
             <TextBlock x:Name="LblCommand" Style="{StaticResource Rail}"/>
             <Button x:Name="BtnCopyCmd" Style="{StaticResource Small}" Margin="0,6,10,0"/>
+            <Button x:Name="BtnTape" Style="{StaticResource Small}" Margin="0,4,10,0" Visibility="Collapsed"/>
           </StackPanel>
           <StackPanel Grid.Column="1">
             <Border x:Name="TapeEdge" BorderBrush="{StaticResource Amber}" BorderThickness="3,0,0,0">
               <Border Background="{StaticResource Bg1}" BorderBrush="{StaticResource Line}" BorderThickness="0,1,1,1" Padding="10,6">
-                <WrapPanel x:Name="CmdPanel"/>
+                <Grid>
+                  <Border x:Name="TapeClip" ClipToBounds="True">
+                    <WrapPanel x:Name="CmdPanel" VerticalAlignment="Top"/>
+                  </Border>
+                  <TextBlock x:Name="TapeMore" Text="..." HorizontalAlignment="Right" VerticalAlignment="Bottom" Padding="6,0,0,1" FontSize="13" FontWeight="Bold" Foreground="{StaticResource Amber}" Background="{StaticResource Bg1}" Visibility="Collapsed"/>
+                </Grid>
               </Border>
             </Border>
             <TextBlock x:Name="TxtProblem" Margin="0,6,0,0" TextWrapping="Wrap" Foreground="{StaticResource Danger}" Visibility="Collapsed"/>
@@ -2126,6 +2161,7 @@ function Get-RoboGoXaml {
             <TextBlock x:Name="LblProgress" Style="{StaticResource Rail}" Margin="0,1,10,0"/>
             <Button x:Name="BtnToggleLog" Style="{StaticResource Small}" Margin="0,7,10,0"/>
             <Button x:Name="BtnCopyLog" Style="{StaticResource Small}" Margin="0,4,10,0"/>
+            <Button x:Name="BtnFailed" Style="{StaticResource Small}" Margin="0,4,10,0" Foreground="{StaticResource Danger}" Visibility="Collapsed"/>
             <Button x:Name="BtnOpenLog" Style="{StaticResource Small}" Margin="0,4,10,0" Visibility="Collapsed"/>
           </StackPanel>
           <Grid Grid.Column="1">
@@ -2247,6 +2283,343 @@ function Invoke-RoboGoSafe {
     catch { Set-RoboGoStatus 'status.error' @($_.Exception.Message) 'error' }
 }
 
+function Confirm-RoboGo {
+    # Every yes/no question of the app goes through here. The tests replace this function,
+    # so they never open a dialog.
+    param([string]$Message)
+    $answer = [System.Windows.MessageBox]::Show($script:RoboGo.UI.Window, $Message, 'RoboGo', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning, [System.Windows.MessageBoxResult]::No)
+    return ($answer -eq [System.Windows.MessageBoxResult]::Yes)
+}
+
+function Invoke-RoboAttention {
+    # A job ended while the user was elsewhere: the taskbar button flashes until the window
+    # is looked at, and a Windows system sound plays. The tests replace this function.
+    param([IntPtr]$Handle, [string]$Level)
+    try {
+        Initialize-RoboNative
+        if ($Handle -ne [IntPtr]::Zero) { [RoboGo.Native]::Flash($Handle) }
+    }
+    catch { }
+    try {
+        if ($Level -eq 'error') { [System.Media.SystemSounds]::Hand.Play() }
+        elseif ($Level -eq 'warn') { [System.Media.SystemSounds]::Exclamation.Play() }
+        else { [System.Media.SystemSounds]::Asterisk.Play() }
+    }
+    catch { }
+}
+
+function Set-RoboGoTaskbar {
+    # Progress on the taskbar button. State: None, Indeterminate (sweeping), Normal (green),
+    # Paused (yellow) or Error (red). Value runs from 0 to 1.
+    param([string]$State, [double]$Value = 0)
+    $info = $script:RoboGo.UI.Window.TaskbarItemInfo
+    if ($null -eq $info) { return }
+    $info.ProgressState = $State
+    $info.ProgressValue = [math]::Max(0.0, [math]::Min(1.0, $Value))
+}
+
+function Set-RoboTaskbarIdentity {
+    # Gives the window an application id of its own and tells the taskbar how to start the
+    # app again. A pin made from the running window then launches RoboGo.exe and shares its
+    # button with the window, although the window lives in a PowerShell process.
+    param($Window)
+    try {
+        Initialize-RoboNative
+        $handle = (New-Object System.Windows.Interop.WindowInteropHelper $Window).EnsureHandle()
+        $icon = Join-Path $script:RoboAppDir 'RoboGo.ico'
+        $iconRef = ''
+        if (Test-Path -LiteralPath $icon) { $iconRef = $icon + ',0' }
+        return [RoboGo.Native]::SetIdentity($handle, $script:RoboAppId, ('"' + (Get-RoboLauncherPath) + '"'), 'RoboGo', $iconRef)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-RoboTaskbarIdentity {
+    # "id|command|name|icon" as the taskbar sees the window.
+    param($Window)
+    try {
+        Initialize-RoboNative
+        return [RoboGo.Native]::GetIdentity((New-Object System.Windows.Interop.WindowInteropHelper $Window).Handle)
+    }
+    catch {
+        return ''
+    }
+}
+
+function Clear-RoboTaskbarIdentity {
+    param($Window)
+    try {
+        Initialize-RoboNative
+        $handle = (New-Object System.Windows.Interop.WindowInteropHelper $Window).Handle
+        if ($handle -ne [IntPtr]::Zero) { [RoboGo.Native]::ClearIdentity($handle) }
+    }
+    catch { }
+}
+
+function Get-RoboGoLast {
+    # The fields as they are now, in the shape settings.json keeps them. No mode.
+    param($UI)
+    return @{
+        Source        = $UI.TxtSource.Text
+        Destination   = $UI.TxtDest.Text
+        Threads       = $UI.TxtThreads.Text
+        Retries       = $UI.TxtRetries.Text
+        Wait          = $UI.TxtWait.Text
+        ExcludeFiles  = $UI.TxtXF.Text
+        ExcludeDirs   = $UI.TxtXD.Text
+        Extra         = $UI.TxtExtra.Text
+        Subfolders    = [bool]$UI.ChkSub.IsChecked
+        SkipJunctions = [bool]$UI.ChkJunction.IsChecked
+        OnlyNewer     = [bool]$UI.ChkNewer.IsChecked
+        Restartable   = [bool]$UI.ChkRestart.IsChecked
+        Scan          = [bool]$UI.ChkScan.IsChecked
+    }
+}
+
+function Set-RoboGoLast {
+    # Puts remembered fields back. Whatever is missing keeps its default.
+    param($UI, $Last)
+    if (-not ($Last -is [hashtable])) { return }
+    $boxes = @{ Source = 'TxtSource'; Destination = 'TxtDest'; Threads = 'TxtThreads'; Retries = 'TxtRetries'; Wait = 'TxtWait'; ExcludeFiles = 'TxtXF'; ExcludeDirs = 'TxtXD'; Extra = 'TxtExtra' }
+    foreach ($key in $boxes.Keys) {
+        if ($Last.ContainsKey($key)) { $UI[$boxes[$key]].Text = [string]$Last[$key] }
+    }
+    $checks = @{ Subfolders = 'ChkSub'; SkipJunctions = 'ChkJunction'; OnlyNewer = 'ChkNewer'; Restartable = 'ChkRestart'; Scan = 'ChkScan' }
+    foreach ($key in $checks.Keys) {
+        if ($Last.ContainsKey($key)) { $UI[$checks[$key]].IsChecked = [bool]$Last[$key] }
+    }
+}
+
+function Get-RoboGoWindowRect {
+    # Where the window is, or $null while it has never been on screen. A maximized or
+    # minimized window reports the rectangle it would go back to.
+    $s = $script:RoboGo
+    $window = $s.UI.Window
+    if (-not $window.IsLoaded) { return $null }
+    if ($window.WindowState -ne [System.Windows.WindowState]::Normal) {
+        $bounds = $window.RestoreBounds
+        if ($bounds.IsEmpty) { return $null }
+        return @{ Left = $bounds.Left; Top = $bounds.Top; Width = $bounds.Width; Height = $bounds.Height }
+    }
+    $height = $window.ActualHeight
+    # with the log hidden the window is short; remember the height it has with the log
+    if (($s.UI.TxtLog.Visibility -ne [System.Windows.Visibility]::Visible) -and ($s.SavedHeight -gt 0)) { $height = $s.SavedHeight }
+    return @{ Left = $window.Left; Top = $window.Top; Width = $window.ActualWidth; Height = $height }
+}
+
+function Restore-RoboGoWindow {
+    # Puts the window where it was when it was closed. Returns $false and leaves it alone
+    # when nothing is saved or that place is not on any screen now.
+    param($UI, $Rect)
+    if (-not ($Rect -is [hashtable])) { return $false }
+    $window = $UI.Window
+    $width = [math]::Max($window.MinWidth, [double]$Rect.Width)
+    $height = [math]::Max($window.MinHeight, [double]$Rect.Height)
+    $left = [double]$Rect.Left
+    $top = [double]$Rect.Top
+    $screenLeft = [System.Windows.SystemParameters]::VirtualScreenLeft
+    $screenTop = [System.Windows.SystemParameters]::VirtualScreenTop
+    $screenRight = $screenLeft + [System.Windows.SystemParameters]::VirtualScreenWidth
+    $screenBottom = $screenTop + [System.Windows.SystemParameters]::VirtualScreenHeight
+    # enough of the title bar must be reachable to grab the window
+    $reachX = [math]::Min($left + $width, $screenRight) - [math]::Max($left, $screenLeft)
+    $reachY = [math]::Min($top + 60, $screenBottom) - [math]::Max($top, $screenTop)
+    if (($reachX -lt 120) -or ($reachY -lt 40)) { return $false }
+    $window.WindowStartupLocation = 'Manual'
+    $window.Left = $left
+    $window.Top = $top
+    $window.Width = $width
+    $window.Height = $height
+    return $true
+}
+
+function Save-RoboGoState {
+    # Remembers the fields and the window rectangle for the next start. With -Job the two
+    # paths also go to the front of the recent lists. A folder that cannot be written to
+    # is not worth a message here.
+    param([switch]$Job)
+    $s = $script:RoboGo
+    $ui = $s.UI
+    $s.Settings.Last = Get-RoboGoLast $ui
+    if ($Job) {
+        $s.Settings.RecentSources = Add-RoboRecent $s.Settings.RecentSources $ui.TxtSource.Text
+        $s.Settings.RecentDestinations = Add-RoboRecent $s.Settings.RecentDestinations $ui.TxtDest.Text
+    }
+    $rect = Get-RoboGoWindowRect
+    if ($null -ne $rect) { $s.Settings.Window = $rect }
+    [void](Save-RoboSettings $s.Settings)
+}
+
+function Update-RoboGoRecentButtons {
+    # The arrows next to BROWSE are only on when there is something to show.
+    $s = $script:RoboGo
+    $idle = ($null -eq $s.Job)
+    $s.UI.BtnRecentSource.IsEnabled = ($idle -and (@($s.Settings.RecentSources).Count -gt 0))
+    $s.UI.BtnRecentDest.IsEnabled = ($idle -and (@($s.Settings.RecentDestinations).Count -gt 0))
+}
+
+function Update-RoboGoRecentRows {
+    # Fills the list of recent paths for FROM (Source) or TO (Destination): a row per path,
+    # newest first, and a last row that empties both lists.
+    param([string]$Which)
+    $s = $script:RoboGo
+    $ui = $s.UI
+    $s.RecentTarget = $Which
+    $paths = $s.Settings.RecentSources
+    if ($Which -eq 'Destination') { $paths = $s.Settings.RecentDestinations }
+    $ui.RecentList.Children.Clear()
+    $n = 0
+    foreach ($path in @($paths)) {
+        if ([string]::IsNullOrEmpty($path)) { continue }
+        $text = New-Object System.Windows.Controls.TextBlock
+        $text.Text = $path
+        $text.TextTrimming = 'CharacterEllipsis'
+        $button = New-Object System.Windows.Controls.Button
+        $button.Tag = $path
+        $button.Content = $text
+        $button.HorizontalContentAlignment = 'Left'
+        $button.Padding = New-Object System.Windows.Thickness (8, 3, 8, 3)
+        $button.Margin = New-Object System.Windows.Thickness (0, 0, 0, 2)
+        [System.Windows.Automation.AutomationProperties]::SetAutomationId($button, ('recent.' + $n))
+        [System.Windows.Automation.AutomationProperties]::SetName($button, $path)
+        $button.Add_Click($s.OnRecent)
+        [void]$ui.RecentList.Children.Add($button)
+        $n++
+    }
+    $text = New-Object System.Windows.Controls.TextBlock
+    $text.Text = Get-RoboText 'ui.clearRecent'
+    $text.FontSize = 11
+    $text.Foreground = $ui.Window.FindResource('Dim')
+    $button = New-Object System.Windows.Controls.Button
+    $button.Content = $text
+    $button.HorizontalContentAlignment = 'Left'
+    $button.Padding = New-Object System.Windows.Thickness (8, 3, 8, 3)
+    $button.Margin = New-Object System.Windows.Thickness (0, 2, 0, 2)
+    [System.Windows.Automation.AutomationProperties]::SetAutomationId($button, 'recent.clear')
+    [System.Windows.Automation.AutomationProperties]::SetName($button, $text.Text)
+    $button.Add_Click($s.OnRecentClear)
+    [void]$ui.RecentList.Children.Add($button)
+}
+
+function Show-RoboGoRecent {
+    # An arrow button: opens the list under its field, as wide as the field.
+    param([string]$Which)
+    $s = $script:RoboGo
+    $ui = $s.UI
+    $popup = $ui.RecentPopup
+    $sameAsBefore = ($Which -eq $s.RecentTarget)
+    if ($popup.IsOpen) {
+        $popup.IsOpen = $false
+        if ($sameAsBefore) { return }
+    }
+    # A click on the arrow of the open list closes it first and then arrives here.
+    elseif ($sameAsBefore -and (([DateTime]::UtcNow - $s.RecentClosed).TotalMilliseconds -lt 250)) { return }
+    Update-RoboGoRecentRows $Which
+    $field = $ui.TxtSource
+    if ($Which -eq 'Destination') { $field = $ui.TxtDest }
+    $popup.PlacementTarget = $field
+    if ($field.ActualWidth -gt 0) { $ui.RecentPanel.Width = $field.ActualWidth }
+    $popup.IsOpen = $true
+}
+
+function Select-RoboGoRecent {
+    # A row of the list was clicked: the path goes into the field the list belongs to.
+    param([string]$Path)
+    $s = $script:RoboGo
+    $s.UI.RecentPopup.IsOpen = $false
+    if ($Path -eq '') { return }
+    if ($s.RecentTarget -eq 'Destination') { $s.UI.TxtDest.Text = $Path }
+    else { $s.UI.TxtSource.Text = $Path }
+}
+
+function Clear-RoboGoRecent {
+    # The last row of the list: both lists are emptied, in the settings file too.
+    $s = $script:RoboGo
+    $s.UI.RecentPopup.IsOpen = $false
+    $s.Settings.RecentSources = [string[]]@()
+    $s.Settings.RecentDestinations = [string[]]@()
+    Save-RoboGoSettings
+    Update-RoboGoRecentButtons
+}
+
+function Update-RoboGoSendTo {
+    # The SEND TO toggle is lit when the shortcut exists.
+    $ui = $script:RoboGo.UI
+    if (Test-RoboSendTo) {
+        $ui.BtnSendTo.Foreground = $ui.Window.FindResource('Amber')
+        $ui.BtnSendTo.BorderBrush = $ui.Window.FindResource('Amber')
+    }
+    else {
+        $ui.BtnSendTo.Foreground = $ui.Window.FindResource('Dim')
+        $ui.BtnSendTo.BorderBrush = $ui.Window.FindResource('Line')
+    }
+}
+
+function Switch-RoboGoSendTo {
+    # The SEND TO toggle: puts RoboGo into the Send to menu of Explorer or takes it out.
+    $s = $script:RoboGo
+    $on = (-not (Test-RoboSendTo))
+    $done = Set-RoboSendTo $on
+    Update-RoboGoSendTo
+    if ($null -ne $s.Job) { return }
+    if (-not $done) { Set-RoboGoStatus 'status.sendToFail' @() 'warn' }
+    elseif ($on) { Set-RoboGoStatus 'status.sendToOn' }
+    else { Set-RoboGoStatus 'status.sendToOff' }
+}
+
+function Update-RoboGoTape {
+    # The command tape shows two lines. A command that needs more gets a button that opens
+    # the rest. The lines are counted from the widths of the pieces, the way the tape wraps
+    # them, so nothing here depends on how tall the tape happens to be drawn.
+    $s = $script:RoboGo
+    $ui = $s.UI
+    $room = $ui.TapeClip.ActualWidth
+    $pieces = @($ui.CmdPanel.Children)
+    if (($room -le 0) -or ($pieces.Count -eq 0)) { return }
+    $everything = New-Object System.Windows.Size ([double]::PositiveInfinity, [double]::PositiveInfinity)
+    $lines = 1
+    $used = 0.0
+    $lineHeight = 0.0
+    foreach ($piece in $pieces) {
+        if (-not $piece.IsMeasureValid) { $piece.Measure($everything) }
+        $width = [math]::Ceiling($piece.DesiredSize.Width)
+        if ($piece.DesiredSize.Height -gt $lineHeight) { $lineHeight = $piece.DesiredSize.Height }
+        if (($used -gt 0) -and (($used + $width) -gt $room)) {
+            $lines++
+            $used = 0.0
+        }
+        $used += $width
+    }
+    if (($lines -gt 2) -and ($lineHeight -gt 0)) {
+        $ui.BtnTape.Visibility = 'Visible'
+        if ($s.TapeOpen) {
+            $ui.TapeClip.MaxHeight = [double]::PositiveInfinity
+            $ui.TapeMore.Visibility = 'Collapsed'
+            $ui.BtnTape.Content = Get-RoboText 'ui.showLess'
+        }
+        else {
+            # three dots over the end of the second line show where the command is cut
+            $ui.TapeClip.MaxHeight = [math]::Ceiling(2 * $lineHeight)
+            $ui.TapeMore.Visibility = 'Visible'
+            $ui.BtnTape.Content = Get-RoboText 'ui.showAll'
+        }
+    }
+    else {
+        $ui.BtnTape.Visibility = 'Collapsed'
+        $ui.TapeMore.Visibility = 'Collapsed'
+        $ui.TapeClip.MaxHeight = [double]::PositiveInfinity
+    }
+}
+
+function Switch-RoboGoTape {
+    # SHOW ALL and SHOW LESS.
+    $s = $script:RoboGo
+    $s.TapeOpen = (-not $s.TapeOpen)
+    Update-RoboGoTape
+}
+
 function Update-RoboGoPreview {
     # Rebuilds the coloured command, the warning line and the problem line from the fields.
     $ui = $script:RoboGo.UI
@@ -2294,6 +2667,7 @@ function Update-RoboGoPreview {
     else {
         $ui.TxtProblem.Visibility = 'Collapsed'
     }
+    Update-RoboGoTape
 }
 
 function Update-RoboGoHelpRows {
@@ -2443,6 +2817,7 @@ function Update-RoboGoLanguage {
     if ($s.StatusKey -ne '') { $ui.TxtStatus.Text = Get-RoboText $s.StatusKey $s.StatusValues }
     Update-RoboGoHelpRows
     Update-RoboGoPreview
+    Update-RoboGoFailed
 }
 
 function Save-RoboGoSettings {
@@ -2480,8 +2855,9 @@ function Add-RoboGoLog {
 }
 
 function Update-RoboGoLogView {
-    # Appends the lines collected since the last call. The box holds the newest lines of
-    # the job: once it has grown past 6,000 it is rebuilt from the last 5,000.
+    # Takes over the lines collected since the last call. The box holds the newest lines of
+    # the job: once it has grown past 6,000 it is rebuilt from the last 5,000. While the
+    # failed view is on, the box is left alone and only the lines are kept.
     $s = $script:RoboGo
     if ($s.LogPending.Count -eq 0) { return }
     $box = $s.UI.TxtLog
@@ -2489,15 +2865,72 @@ function Update-RoboGoLogView {
     # follow the end, unless the user has scrolled up to read
     $follow = (($box.VerticalOffset + $box.ViewportHeight) -ge ($box.ExtentHeight - 24))
     $s.LogLines.AddRange($s.LogPending)
+    $trimmed = $false
     if ($s.LogLines.Count -gt 6000) {
         $s.LogLines.RemoveRange(0, ($s.LogLines.Count - 5000))
-        $box.Text = [string]::Join($nl, $s.LogLines.ToArray()) + $nl
+        $trimmed = $true
     }
-    else {
-        $box.AppendText([string]::Join($nl, $s.LogPending.ToArray()) + $nl)
+    if ($s.LogView -eq 'all') {
+        if ($trimmed) { $box.Text = [string]::Join($nl, $s.LogLines.ToArray()) + $nl }
+        else { $box.AppendText([string]::Join($nl, $s.LogPending.ToArray()) + $nl) }
+        if ($follow) { $box.ScrollToEnd() }
     }
     $s.LogPending.Clear()
-    if ($follow) { $box.ScrollToEnd() }
+}
+
+function Show-RoboGoLogText {
+    # Fills the log box from scratch for the view that is on: the whole log, or the failures.
+    $s = $script:RoboGo
+    $box = $s.UI.TxtLog
+    $nl = [Environment]::NewLine
+    if ($s.LogView -eq 'failed') {
+        $box.Text = $s.FailedText
+        $box.ScrollToHome()
+    }
+    else {
+        $text = ''
+        if ($s.LogLines.Count -gt 0) { $text = [string]::Join($nl, $s.LogLines.ToArray()) + $nl }
+        $box.Text = $text
+        $box.ScrollToEnd()
+    }
+}
+
+function Update-RoboGoFailed {
+    # Keeps the FAILED button and the failed view in step with the failures of the job.
+    $s = $script:RoboGo
+    $ui = $s.UI
+    if ($null -ne $s.Job) {
+        $lines = Get-RoboFailureLines $s.Job.State
+        $text = ''
+        if ($lines.Count -gt 0) { $text = [string]::Join([Environment]::NewLine, $lines) + [Environment]::NewLine }
+        if ($text -ne $s.FailedText) {
+            $s.FailedCount = $lines.Count
+            $s.FailedText = $text
+            if ($s.LogView -eq 'failed') { Show-RoboGoLogText }
+        }
+    }
+    if ($s.FailedCount -gt 0) {
+        $ui.BtnFailed.Visibility = 'Visible'
+        if ($s.LogView -eq 'failed') { $ui.BtnFailed.Content = Get-RoboText 'ui.fullLog' }
+        else { $ui.BtnFailed.Content = Get-RoboText 'ui.failed' $s.FailedCount }
+    }
+    else {
+        $ui.BtnFailed.Visibility = 'Collapsed'
+        if ($s.LogView -eq 'failed') {
+            $s.LogView = 'all'
+            Show-RoboGoLogText
+        }
+    }
+}
+
+function Switch-RoboGoFailed {
+    # The FAILED button: only the failures, or the whole log again.
+    $s = $script:RoboGo
+    Update-RoboGoLogView
+    if ($s.LogView -eq 'failed') { $s.LogView = 'all' }
+    elseif ($s.FailedCount -gt 0) { $s.LogView = 'failed' }
+    Show-RoboGoLogText
+    Update-RoboGoFailed
 }
 
 function Clear-RoboGoLog {
@@ -2536,7 +2969,10 @@ function Set-RoboGoBusy {
     $ui = $script:RoboGo.UI
     foreach ($name in $script:RoboGoInputs) { $ui[$name].IsEnabled = (-not $Busy) }
     $ui.BtnCancel.IsEnabled = $Busy
-    if (-not $Busy) { $ui.ChkSub.IsEnabled = (-not [bool]$ui.RbMirror.IsChecked) }
+    if (-not $Busy) {
+        $ui.ChkSub.IsEnabled = (-not [bool]$ui.RbMirror.IsChecked)
+        Update-RoboGoRecentButtons
+    }
 }
 
 function Start-RoboGoPhase {
@@ -2548,6 +2984,8 @@ function Start-RoboGoPhase {
     $s.Meter = New-RoboSpeedMeter
     $s.Clock = [System.Diagnostics.Stopwatch]::StartNew()
     $s.UI.Bar.IsIndeterminate = (($Phase -ne 'Run') -or ($s.TotalBytes -le 0))
+    if ($s.UI.Bar.IsIndeterminate) { Set-RoboGoTaskbar 'Indeterminate' }
+    else { Set-RoboGoTaskbar 'Normal' 0 }
     if ($Phase -eq 'Scan') { Set-RoboGoStatus 'status.scanning' }
     elseif ($Phase -eq 'DryRun') { Set-RoboGoStatus 'status.dryRun' }
     else { Set-RoboGoStatus 'status.copying' }
@@ -2570,10 +3008,16 @@ function Start-RoboGoRun {
     if (($danger -ne '') -and (-not $DryRun)) {
         $nl = [Environment]::NewLine
         $message = $danger + $nl + $nl + (Get-RoboText 'ui.from') + '  ' + (ConvertTo-RoboPath $options.Source) + $nl + (Get-RoboText 'ui.to') + '  ' + (ConvertTo-RoboPath $options.Destination) + $nl + $nl + (Get-RoboText 'dialog.confirmTip') + $nl + $nl + (Get-RoboText 'dialog.confirmAsk')
-        $answer = [System.Windows.MessageBox]::Show($ui.Window, $message, 'RoboGo', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning, [System.Windows.MessageBoxResult]::No)
-        if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return }
+        if (-not (Confirm-RoboGo $message)) { return }
     }
     $ui.HelpPopup.IsOpen = $false
+    $ui.RecentPopup.IsOpen = $false
+    # the fields of a job that starts are worth remembering, and so are its two folders
+    Save-RoboGoState -Job
+    $s.FailedCount = 0
+    $s.FailedText = ''
+    $s.LogView = 'all'
+    Update-RoboGoFailed
     $s.Options = $options
     $s.DryRun = [bool]$DryRun
     $s.Cancelled = $false
@@ -2635,6 +3079,8 @@ function Update-RoboGoNumbers {
         # 100 is reserved for the moment robocopy has exited successfully.
         $pct = [math]::Min(99.9, (100.0 * $done / $s.TotalBytes))
         $ui.Bar.Value = $pct
+        if ($state.Errors -gt 0) { Set-RoboGoTaskbar 'Paused' ($pct / 100) }
+        else { Set-RoboGoTaskbar 'Normal' ($pct / 100) }
         $ui.TxtPercent.Text = [string]::Format($script:Inv, '{0:0.0}%', $pct)
         $ui.TxtFiles.Text = '{0} / {1}' -f $state.CompletedFiles, $s.TotalFiles
         $ui.TxtData.Text = (Format-RoboBytes $done) + ' / ' + (Format-RoboBytes $s.TotalBytes)
@@ -2699,10 +3145,25 @@ function Complete-RoboGo {
     else {
         $ui.BtnOpenLog.Visibility = 'Collapsed'
     }
+    # the failures of this job stay available after it is gone
+    $failures = Get-RoboFailureLines $state
+    $s.FailedCount = $failures.Count
+    $s.FailedText = ''
+    if ($failures.Count -gt 0) { $s.FailedText = [string]::Join([Environment]::NewLine, $failures) + [Environment]::NewLine }
     Update-RoboGoLogView
     $s.Job = $null
     $s.Phase = 'Idle'
+    Update-RoboGoFailed
+    if ($s.LogView -eq 'failed') { Show-RoboGoLogText }
+    # red on the taskbar for a failed job, nothing otherwise
+    if ($verdict.Level -eq 'error') { Set-RoboGoTaskbar 'Error' 1 }
+    else { Set-RoboGoTaskbar 'None' }
     Set-RoboGoBusy $false
+    # whoever is looking at another window gets a flash and a sound
+    if (-not $ui.Window.IsActive) {
+        $handle = (New-Object System.Windows.Interop.WindowInteropHelper $ui.Window).Handle
+        Invoke-RoboAttention $handle $verdict.Level
+    }
 }
 
 function Step-RoboGo {
@@ -2735,6 +3196,33 @@ function Step-RoboGo {
         else {
             Add-RoboGoLog (Get-RoboText 'log.scanNoTotals')
         }
+        # Is there room? The scan knows what the job needs. A mirror deletes first and
+        # compression can make things fit, so the user may run it anyway.
+        if ($null -ne $summary) {
+            $free = Get-RoboFreeSpace $s.Options.Destination
+            if ($free -ge 0) { Add-RoboGoLog (Get-RoboText 'log.space' (Format-RoboBytes $free)) }
+            if (($free -ge 0) -and ($s.TotalBytes -gt $free)) {
+                $need = Format-RoboBytes $s.TotalBytes
+                $have = Format-RoboBytes $free
+                $nl = [Environment]::NewLine
+                # no ticks while the question is open
+                $s.Timer.Stop()
+                $go = Confirm-RoboGo ((Get-RoboText 'dialog.noSpace' @($need, $have)) + $nl + $nl + (Get-RoboText 'dialog.runAnyway'))
+                if (-not $go) {
+                    [void](Close-RoboJobLog $job)
+                    $s.Job = $null
+                    $s.Phase = 'Idle'
+                    $s.UI.Bar.IsIndeterminate = $false
+                    Set-RoboGoTaskbar 'None'
+                    Set-RoboGoBusy $false
+                    Set-RoboGoStatus 'status.noSpace' @($need, $have) 'warn'
+                    Add-RoboGoLog ('== ' + (Get-RoboText 'status.noSpace' @($need, $have)))
+                    Update-RoboGoLogView
+                    return
+                }
+                $s.Timer.Start()
+            }
+        }
         # the log of the scan is never kept, the run that follows writes its own
         [void](Close-RoboJobLog $job)
         Start-RoboGoPhase 'Run'
@@ -2744,6 +3232,7 @@ function Step-RoboGo {
     foreach ($line in $lines) { Add-RoboGoLog $line }
     Update-RoboGoNumbers
     Update-RoboGoLogView
+    Update-RoboGoFailed
     if ($job.Done) { Complete-RoboGo }
 }
 
@@ -2759,6 +3248,7 @@ function Stop-RoboGoOnError {
     }
     $s.Phase = 'Idle'
     $s.UI.Bar.IsIndeterminate = $false
+    Set-RoboGoTaskbar 'None'
     Set-RoboGoBusy $false
     Set-RoboGoStatus 'status.error' @($ErrorRecord.Exception.Message) 'error'
 }
@@ -2819,20 +3309,18 @@ function Set-RoboDarkTitleBar {
     # text and the border in the colours of the window itself. Cosmetic only.
     param($Window)
     try {
-        if (-not ('RoboGo.Dwm' -as [type])) {
-            Add-Type -Namespace RoboGo -Name Dwm -MemberDefinition '[DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);'
-        }
+        Initialize-RoboNative
         $handle = (New-Object System.Windows.Interop.WindowInteropHelper $Window).EnsureHandle()
         $on = 1
-        [void][RoboGo.Dwm]::DwmSetWindowAttribute($handle, 20, [ref]$on, 4)
+        [void][RoboGo.Native]::DwmSetWindowAttribute($handle, 20, [ref]$on, 4)
         # 35 caption, 36 caption text, 34 border. A COLORREF is 0x00BBGGRR. Without these an
         # accent-coloured title bar would sit on top of the dark window. Windows 10 ignores them.
         $caption = 0x000E0C0B
         $captionText = 0x00E1E6E8
         $border = 0x00342E2A
-        [void][RoboGo.Dwm]::DwmSetWindowAttribute($handle, 35, [ref]$caption, 4)
-        [void][RoboGo.Dwm]::DwmSetWindowAttribute($handle, 36, [ref]$captionText, 4)
-        [void][RoboGo.Dwm]::DwmSetWindowAttribute($handle, 34, [ref]$border, 4)
+        [void][RoboGo.Native]::DwmSetWindowAttribute($handle, 35, [ref]$caption, 4)
+        [void][RoboGo.Native]::DwmSetWindowAttribute($handle, 36, [ref]$captionText, 4)
+        [void][RoboGo.Native]::DwmSetWindowAttribute($handle, 34, [ref]$border, 4)
     }
     catch { }
 }
@@ -2840,7 +3328,7 @@ function Set-RoboDarkTitleBar {
 function Initialize-RoboGoWindow {
     # Wires the events and creates the controller state. Kept apart from New-RoboGoWindow
     # so that the tests can drive the window without showing it.
-    param($UI)
+    param($UI, [string]$Source = '')
     $timer = New-Object System.Windows.Threading.DispatcherTimer
     $timer.Interval = [TimeSpan]::FromMilliseconds(200)
     $settings = Read-RoboSettings
@@ -2870,6 +3358,14 @@ function Initialize-RoboGoWindow {
         HelpClosed     = [DateTime]::MinValue
         OnHelpSwitch   = $null
         OnHelpSetup    = $null
+        LogView        = 'all'
+        FailedCount    = 0
+        FailedText     = ''
+        TapeOpen       = $false
+        RecentTarget   = ''
+        RecentClosed   = [DateTime]::MinValue
+        OnRecent       = $null
+        OnRecentClear  = $null
         SavedHeight    = 0.0
         SavedMinHeight = 0.0
     }
@@ -2882,8 +3378,31 @@ function Initialize-RoboGoWindow {
         param($control, $e)
         Invoke-RoboGoSafe { Invoke-RoboGoSetup ([string]$control.Tag) }
     }
+    $script:RoboGo.OnRecent = {
+        param($control, $e)
+        Invoke-RoboGoSafe { Select-RoboGoRecent ([string]$control.Tag) }
+    }
+    $script:RoboGo.OnRecentClear = {
+        param($control, $e)
+        Invoke-RoboGoSafe { Clear-RoboGoRecent }
+    }
     $UI.TxtVersion.Text = 'v' + $script:RoboGoVersion
     $UI.ChkKeepLog.IsChecked = [bool]$settings.KeepLog
+    $UI.Window.TaskbarItemInfo = New-Object System.Windows.Shell.TaskbarItemInfo
+    # The fields of the last session come back, before any handler listens. The mode does
+    # not: it is always COPY at start. A folder handed over at start (Send to) goes into
+    # FROM and empties TO, so that an old destination is not reused by accident.
+    Set-RoboGoLast $UI $settings.Last
+    $given = ConvertTo-RoboPath $Source
+    $givenFile = $false
+    if ($given -ne '') {
+        if (Test-Path -LiteralPath $given -PathType Leaf) {
+            $given = [System.IO.Path]::GetDirectoryName($given)
+            $givenFile = $true
+        }
+        $UI.TxtSource.Text = $given
+        $UI.TxtDest.Text = ''
+    }
     $icon = Join-Path $script:RoboAppDir 'RoboGo.ico'
     if (Test-Path -LiteralPath $icon) {
         try { $UI.Window.Icon = [System.Windows.Media.Imaging.BitmapFrame]::Create((New-Object System.Uri $icon)) }
@@ -2958,6 +3477,31 @@ function Initialize-RoboGoWindow {
             }
         })
     $UI.BtnLang.Add_Click({ Invoke-RoboGoSafe { Switch-RoboGoLanguage } })
+    $UI.BtnSendTo.Add_Click({ Invoke-RoboGoSafe { Switch-RoboGoSendTo } })
+    $UI.BtnTape.Add_Click({ Invoke-RoboGoSafe { Switch-RoboGoTape } })
+    $UI.BtnFailed.Add_Click({ Invoke-RoboGoSafe { Switch-RoboGoFailed } })
+    $UI.BtnRecentSource.Add_Click({ Invoke-RoboGoSafe { Show-RoboGoRecent 'Source' } })
+    $UI.BtnRecentDest.Add_Click({ Invoke-RoboGoSafe { Show-RoboGoRecent 'Destination' } })
+    # the tape is counted again whenever its width or its content has been laid out
+    $UI.TapeClip.Add_SizeChanged({ Invoke-RoboGoSafe { Update-RoboGoTape } })
+    $UI.CmdPanel.Add_SizeChanged({ Invoke-RoboGoSafe { Update-RoboGoTape } })
+    # The list of recent paths hangs under its field, left edges in line, or above it
+    # when there is no room below.
+    $UI.RecentPopup.CustomPopupPlacementCallback = {
+        param($popupSize, $targetSize, $offset)
+        $axis = [System.Windows.Controls.Primitives.PopupPrimaryAxis]::Vertical
+        $below = New-Object System.Windows.Point (0, ($targetSize.Height + 2))
+        $above = New-Object System.Windows.Point (0, (-$popupSize.Height - 2))
+        $first = New-Object System.Windows.Controls.Primitives.CustomPopupPlacement ($below, $axis)
+        $second = New-Object System.Windows.Controls.Primitives.CustomPopupPlacement ($above, $axis)
+        return [System.Windows.Controls.Primitives.CustomPopupPlacement[]]@($first, $second)
+    }
+    $UI.RecentPopup.Add_Closed({ $script:RoboGo.RecentClosed = [DateTime]::UtcNow })
+    # looking at the window is enough to take the red off the taskbar button
+    $UI.Window.Add_Activated({
+            $s = $script:RoboGo
+            if (($null -eq $s.Job) -and ($s.UI.Window.TaskbarItemInfo.ProgressState -eq [System.Windows.Shell.TaskbarItemProgressState]::Error)) { Set-RoboGoTaskbar 'None' }
+        })
     $UI.ChkKeepLog.Add_Checked({ Invoke-RoboGoSafe { Set-RoboGoKeepLog $true } })
     $UI.ChkKeepLog.Add_Unchecked({ Invoke-RoboGoSafe { Set-RoboGoKeepLog $false } })
 
@@ -2981,8 +3525,7 @@ function Initialize-RoboGoWindow {
             param($window, $e)
             $s = $script:RoboGo
             if ($null -ne $s.Job) {
-                $answer = [System.Windows.MessageBox]::Show($s.UI.Window, (Get-RoboText 'dialog.closing'), 'RoboGo', [System.Windows.MessageBoxButton]::YesNo, [System.Windows.MessageBoxImage]::Warning, [System.Windows.MessageBoxResult]::No)
-                if ($answer -ne [System.Windows.MessageBoxResult]::Yes) {
+                if (-not (Confirm-RoboGo (Get-RoboText 'dialog.closing'))) {
                     $e.Cancel = $true
                     return
                 }
@@ -2992,26 +3535,39 @@ function Initialize-RoboGoWindow {
                 $s.Job = $null
             }
             $s.UI.HelpPopup.IsOpen = $false
+            $s.UI.RecentPopup.IsOpen = $false
+            # what the next start should find again
+            try { Save-RoboGoState }
+            catch { }
+            Clear-RoboTaskbarIdentity $s.UI.Window
         })
 
     Set-RoboGoStatus 'status.ready'
+    if ($givenFile) { Set-RoboGoStatus 'status.droppedFile' }
     Update-RoboGoLanguage
+    Update-RoboGoRecentButtons
+    Update-RoboGoSendTo
 }
 
 function Show-RoboGoWindow {
+    param([string]$Source = '')
     # First start: write settings.json, so the log limits in it can be found and changed.
     $settings = Read-RoboSettings
     if (-not (Test-Path -LiteralPath (Get-RoboSettingsPath))) { [void](Save-RoboSettings $settings) }
     # Then the cleanup: logs that are too old or too big go, in TEMP and in the logs folder.
     try { Limit-RoboLogs -Days $settings.LogMaxDays -MaxFileMB $settings.LogFileMaxMB -MaxTotalMB $settings.LogMaxMB }
     catch { }
+    # A Send to shortcut that points at an old place of this folder is put right.
+    Update-RoboSendTo
     $ui = New-RoboGoWindow
-    Initialize-RoboGoWindow $ui
+    Initialize-RoboGoWindow $ui -Source $Source
+    [void](Restore-RoboGoWindow $ui $script:RoboGo.Settings.Window)
     $area = [System.Windows.SystemParameters]::WorkArea
     if ($ui.Window.Height -gt ($area.Height - 16)) {
         $ui.Window.Height = [math]::Max($ui.Window.MinHeight, ($area.Height - 16))
     }
     Set-RoboDarkTitleBar $ui.Window
+    [void](Set-RoboTaskbarIdentity $ui.Window)
     [void]$ui.Window.ShowDialog()
 }
 
@@ -3056,8 +3612,11 @@ function Invoke-RoboGoSelfTest {
 
 if ($NoUI) { return }
 if ($SelfTest) { exit (Invoke-RoboGoSelfTest) }
+# The launcher hands over a folder in the environment, where no quoting can go wrong.
+if (($Source -eq '') -and (-not [string]::IsNullOrEmpty($env:ROBOGO_SOURCE))) { $Source = $env:ROBOGO_SOURCE }
+$env:ROBOGO_SOURCE = $null
 try {
-    Show-RoboGoWindow
+    Show-RoboGoWindow -Source $Source
 }
 catch {
     # There is no console to print to when the launcher started the app, so say it in a box.

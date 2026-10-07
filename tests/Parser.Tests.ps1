@@ -89,8 +89,9 @@ Assert-Equal '' $s.Failures[2].Detail 'failures: an entry whose message has not 
 Update-RoboProgress $s @('Access is denied.')
 Assert-Equal 'Access is denied.' $s.Failures[2].Detail 'failures: the message may arrive with the next batch of lines'
 $lines = Get-RoboFailureLines $s
-Assert-Equal 3 $lines.Count 'failures: one line per entry'
-Assert-True (($lines[1] -like '*Accessing Source Directory C:\s\locked\*') -and ($lines[1] -like '*5 (0x00000005)*') -and ($lines[1] -like '*Access is denied.*')) 'failures: a line holds the path, the code and the message'
+Assert-Equal 3 $lines.Count 'failures: one text per entry'
+Assert-Equal ('Accessing Source Directory C:\s\locked\' + [Environment]::NewLine + '    5 (0x00000005)  Access is denied.') $lines[1] 'failures: what and where on the first line, code and message indented below'
+Assert-Equal ('Copying File C:\s\a.txt' + [Environment]::NewLine + '    32 (0x00000020)  Proces nie moze uzyskac dostepu do pliku.') $lines[0] 'failures: the same shape for a file'
 Assert-Equal 0 (Get-RoboFailureLines (New-RoboProgress)).Count 'failures: none for a clean job'
 
 # --- extra items in the destination are not copies ---

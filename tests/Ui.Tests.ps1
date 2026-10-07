@@ -6,14 +6,41 @@ $ErrorActionPreference = 'Stop'
 # the app at a throwaway one, with a small test language in it.
 $env:ROBOGO_HOME = Join-Path ([System.IO.Path]::GetTempPath()) ('RoboGoHomeTest-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path (Join-Path $env:ROBOGO_HOME 'lang') | Out-Null
+# The Send to shortcut goes to a folder of its own as well, never to the real Send to menu.
+$env:ROBOGO_SENDTO = Join-Path $env:ROBOGO_HOME 'sendto'
 [System.IO.File]::WriteAllText((Join-Path $env:ROBOGO_HOME 'lang\xx.json'), '{ "_name": "Test", "ui.from": "OD", "ph.source": "np. D:\\Zdjecia", "status.ready": "Gotowe." }', (New-Object System.Text.UTF8Encoding $false))
 $app = Join-Path $PSScriptRoot '..\RoboGo.ps1'
 . $app -NoUI
-# The tests stay out of the real clipboard: they replace the one function that writes to it.
+# The tests stay off the desktop of whoever runs them. They replace the few functions that
+# would reach it: the clipboard, every yes/no question, and the flash and sound at the end
+# of a job. The free space of the destination can be faked to stage a full disk.
 $script:Clip = ''
 function Set-RoboClipboard {
     param([string]$Text)
     $script:Clip = $Text
+}
+$script:Asked = New-Object System.Collections.Generic.List[string]
+$script:Answer = $true
+function Confirm-RoboGo {
+    param([string]$Message)
+    $script:Asked.Add($Message)
+    return $script:Answer
+}
+$script:Signals = New-Object System.Collections.Generic.List[string]
+function Invoke-RoboAttention {
+    param($Handle, [string]$Level)
+    $script:Signals.Add($Level)
+}
+$script:FakeFree = $null
+$script:RealFreeSpace = ${function:Get-RoboFreeSpace}
+function Get-RoboFreeSpace {
+    param([string]$Path)
+    if ($null -ne $script:FakeFree) { return [long]$script:FakeFree }
+    return (& $script:RealFreeSpace $Path)
+}
+function Get-Taskbar {
+    param($UI)
+    return [string]$UI.Window.TaskbarItemInfo.ProgressState
 }
 $workingLogsBefore = @(Get-ChildItem -LiteralPath (Get-RoboLogDir) -Filter '*.log' -File).Count
 
@@ -122,9 +149,82 @@ if (-not (Test-Path -LiteralPath $shots)) { New-Item -ItemType Directory -Force 
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ('RoboGoUiTest-' + [guid]::NewGuid().ToString('N'))
 
 try {
+    # --- a window that finds a settings file: the fields of the last session come back ---
+    $remembered = Read-RoboSettings
+    $remembered.Last = @{ Source = 'D:\Old\From'; Destination = 'E:\Old\To'; Subfolders = $true; SkipJunctions = $false; OnlyNewer = $true; Restartable = $true; Threads = '4'; Retries = '7'; Wait = '9'; ExcludeFiles = '*.bak'; ExcludeDirs = 'tmp'; Extra = '/FFT'; Scan = $false }
+    $remembered.RecentSources = @('D:\Old\From', 'D:\Older')
+    $remembered.RecentDestinations = @('E:\Old\To')
+    [void](Save-RoboSettings $remembered)
+    $first = New-RoboGoWindow
+    Initialize-RoboGoWindow $first
+    Assert-Equal 'D:\Old\From|E:\Old\To|4|7|9|*.bak|tmp|/FFT' (($first.TxtSource.Text, $first.TxtDest.Text, $first.TxtThreads.Text, $first.TxtRetries.Text, $first.TxtWait.Text, $first.TxtXF.Text, $first.TxtXD.Text, $first.TxtExtra.Text) -join '|') 'restore: the texts of the last session are back in the fields'
+    Assert-Equal 'True|False|True|True|False' (($first.ChkSub.IsChecked, $first.ChkJunction.IsChecked, $first.ChkNewer.IsChecked, $first.ChkRestart.IsChecked, $first.ChkScan.IsChecked) -join '|') 'restore: and the check boxes'
+    Assert-Equal 'robocopy "D:\Old\From" "E:\Old\To" /E /MT:4 /R:7 /W:9 /Z /XO /XF *.bak /XD tmp /FFT' (Get-CommandText $first) 'restore: the command shows them'
+    Assert-Equal 'True|True' ([string]$first.BtnRecentSource.IsEnabled + '|' + [string]$first.BtnRecentDest.IsEnabled) 'recent: both arrow buttons are on when there are paths'
+    Update-RoboGoRecentRows 'Source'
+    Assert-Equal 3 $first.RecentList.Children.Count 'recent: one row per path and one to clear the list'
+    Assert-Equal 'D:\Old\From|D:\Older' (($first.RecentList.Children[0].Tag, $first.RecentList.Children[1].Tag) -join '|') 'recent: newest first'
+    Save-ElementPng $first.RecentPanel (Join-Path $shots 'ui-recent.png')
+    Select-RoboGoRecent 'D:\Older'
+    Assert-Equal 'D:\Older' $first.TxtSource.Text 'recent: a row fills FROM'
+    Update-RoboGoRecentRows 'Destination'
+    Assert-Equal 2 $first.RecentList.Children.Count 'recent: the destinations have a list of their own'
+    Select-RoboGoRecent 'E:\Old\To'
+    Assert-Equal 'E:\Old\To' $first.TxtDest.Text 'recent: a row fills TO'
+    Clear-RoboGoRecent
+    Assert-Equal 'False|False' ([string]$first.BtnRecentSource.IsEnabled + '|' + [string]$first.BtnRecentDest.IsEnabled) 'recent: clearing the list turns the arrows off'
+    $cleared = Read-RoboSettings
+    Assert-Equal '0|0' ([string]$cleared.RecentSources.Count + '|' + [string]$cleared.RecentDestinations.Count) 'recent: and it is saved'
+    $script:RoboGo.Timer.Stop()
+
+    # --- started with a folder (Send to): FROM is that folder, TO is empty ---
+    $given = Join-Path $env:ROBOGO_HOME 'given folder'
+    New-Item -ItemType Directory -Force -Path $given | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $given 'one.txt'), 'x')
+    $sent = New-RoboGoWindow
+    Initialize-RoboGoWindow $sent -Source ($given + '\')
+    Assert-Equal ($given + '||*.bak') (($sent.TxtSource.Text, $sent.TxtDest.Text, $sent.TxtXF.Text) -join '|') 'send to: the folder goes into FROM, TO is emptied, the other fields stay remembered'
+    Assert-Equal 'Ready.' $sent.TxtStatus.Text 'send to: nothing to remark for a folder'
+    $script:RoboGo.Timer.Stop()
+    $sent = New-RoboGoWindow
+    Initialize-RoboGoWindow $sent -Source (Join-Path $given 'one.txt')
+    Assert-Equal $given $sent.TxtSource.Text 'send to: a file gives its folder'
+    Assert-Equal 'That was a file, so its folder was taken.' $sent.TxtStatus.Text 'send to: and the status line says so'
+    $script:RoboGo.Timer.Stop()
+    [System.IO.File]::Delete((Get-RoboSettingsPath))
+
+    # --- where the window was ---
+    $probe = New-RoboGoWindow
+    $spot = @{ Left = ([System.Windows.SystemParameters]::VirtualScreenLeft + 60); Top = ([System.Windows.SystemParameters]::VirtualScreenTop + 50); Width = 820; Height = 660 }
+    Assert-True (Restore-RoboGoWindow $probe $spot) 'placement: a rectangle on the screen is taken'
+    Assert-Equal ('Manual|' + $spot.Left + '|' + $spot.Top + '|820|660') (([string]$probe.Window.WindowStartupLocation, $probe.Window.Left, $probe.Window.Top, $probe.Window.Width, $probe.Window.Height) -join '|') 'placement: position and size are applied'
+    $probe = New-RoboGoWindow
+    Assert-True (-not (Restore-RoboGoWindow $probe @{ Left = 99999; Top = 99999; Width = 800; Height = 600 })) 'placement: a spot that is on no screen is refused'
+    Assert-Equal 'CenterScreen' ([string]$probe.Window.WindowStartupLocation) 'placement: the window then opens in the middle'
+    Assert-True (-not (Restore-RoboGoWindow $probe $null)) 'placement: nothing saved, nothing done'
+    $spot.Width = 100
+    $spot.Height = 100
+    [void](Restore-RoboGoWindow $probe $spot)
+    Assert-Equal ([string]$probe.Window.MinWidth + '|' + [string]$probe.Window.MinHeight) ([string]$probe.Window.Width + '|' + [string]$probe.Window.Height) 'placement: never smaller than the minimum size'
+
+    # --- the main window of these tests starts without a settings file ---
     $ui = New-RoboGoWindow
     Assert-True ($null -ne $ui.Window) 'window: the XAML loads and every named control exists'
     Initialize-RoboGoWindow $ui
+    Assert-Equal 'False|False' ([string]$ui.BtnRecentSource.IsEnabled + '|' + [string]$ui.BtnRecentDest.IsEnabled) 'recent: no arrows without earlier jobs'
+    Assert-Equal 'Collapsed|Collapsed' ([string]$ui.BtnFailed.Visibility + '|' + [string]$ui.BtnTape.Visibility) 'window: the FAILED and SHOW ALL buttons wait until they are needed'
+    Assert-Equal 'None' (Get-Taskbar $ui) 'taskbar: no progress while idle'
+
+    # --- Send to toggle ---
+    Assert-Equal 'SEND TO' $ui.BtnSendTo.Content 'send to: the toggle is in the header'
+    Switch-RoboGoSendTo
+    Assert-True (Test-RoboSendTo) 'send to: a click creates the shortcut'
+    Assert-True ([object]::ReferenceEquals($ui.BtnSendTo.Foreground, $ui.Window.FindResource('Amber'))) 'send to: the toggle lights up'
+    Assert-Equal 'RoboGo is now in the Send to menu of Explorer.' $ui.TxtStatus.Text 'send to: the status line confirms it'
+    Switch-RoboGoSendTo
+    Assert-True (-not (Test-RoboSendTo)) 'send to: a second click removes it'
+    Assert-True ([object]::ReferenceEquals($ui.BtnSendTo.Foreground, $ui.Window.FindResource('Dim'))) 'send to: the toggle goes dim'
+    Set-RoboGoStatus 'status.ready'
     Assert-Equal ('v' + $script:RoboGoVersion) $ui.TxtVersion.Text 'window: shows the version'
     Assert-Equal 'Ready.' $ui.TxtStatus.Text 'window: starts idle'
     Assert-Equal 'False' $ui.BtnCancel.IsEnabled 'window: cancel is off while idle'
@@ -220,6 +320,7 @@ try {
     Save-WindowPng $ui (Join-Path $shots 'ui-mirror.png')
     Assert-Rendered (Join-Path $shots 'ui-mirror.png') 'render: the mirror state is drawn'
     Assert-Equal '' (Get-ClippedControls $ui) 'size: nothing is clipped at the default size, even with the warning line and a two-line command'
+    Assert-Equal 'Collapsed' ([string]$ui.BtnTape.Visibility) 'tape: a command of two lines needs no SHOW ALL'
     Assert-True ($ui.TxtLog.ActualHeight -ge 60) 'size: the log box keeps at least 60 units'
 
     # --- hiding and showing the log (the window is shown off screen since the render) ---
@@ -259,6 +360,10 @@ try {
     Start-RoboGoRun
     Assert-True ($null -ne $script:RoboGo.Job) 'run: the job starts'
     Assert-Equal 'Scan' $script:RoboGo.Phase 'run: it begins with the scan'
+    Assert-Equal 'Indeterminate' (Get-Taskbar $ui) 'taskbar: sweeping during the scan'
+    $started = Read-RoboSettings
+    Assert-Equal ($src + '|' + (Join-Path $root 'dst')) ($started.RecentSources[0] + '|' + $started.RecentDestinations[0]) 'recent: a started job files its two paths'
+    Assert-Equal $src $started.Last.Source 'restore: and the fields are saved at that moment'
     Assert-Equal 'False' $ui.BtnRun.IsEnabled 'run: inputs are locked while busy'
     Assert-Equal 'True' $ui.BtnCancel.IsEnabled 'run: cancel is available'
     Step-UntilIdle
@@ -273,6 +378,11 @@ try {
     Assert-True ($ui.TxtLog.Text -like '> robocopy *') 'run: the log starts with the command'
     Assert-True ($ui.TxtLog.Text -like '*g.bin*') 'run: the log shows the copied files'
     Assert-Equal 'True' $ui.BtnRun.IsEnabled 'run: inputs are unlocked afterwards'
+    Assert-Equal 'True|True' ([string]$ui.BtnRecentSource.IsEnabled + '|' + [string]$ui.BtnRecentDest.IsEnabled) 'recent: the arrows are on after the first job'
+    Assert-Equal 'None' (Get-Taskbar $ui) 'taskbar: no progress left after a good end'
+    Assert-Equal 'ok' ($script:Signals -join ',') 'done signal: one signal for the finished job, the window is not the active one'
+    Assert-True ($ui.TxtLog.Text -match 'Free space in the destination: \d') 'free space: the room of the destination is written into the log'
+    Assert-Equal 0 $script:Asked.Count 'free space: enough room, no question'
     Assert-Equal 'False' $ui.ChkKeepLog.IsChecked 'logs: keeping log files is off by default'
     Assert-Equal 'Collapsed' $ui.BtnOpenLog.Visibility 'logs: no OPEN LOG without a kept file'
     Assert-Equal $workingLogsBefore (Get-WorkingLogCount) 'logs: the working log is gone when the job is over'
@@ -291,6 +401,43 @@ try {
     Clear-RoboGoLog
     Copy-RoboGoLog
     Assert-Equal '' $script:Clip 'copy log: an empty log box leaves the clipboard alone'
+
+    # --- a mirror asks first ---
+    $ui.RbMirror.IsChecked = $true
+    $ui.TxtDest.Text = Join-Path $root 'dstm'
+    $script:Answer = $false
+    Start-RoboGoRun
+    Assert-True ($null -eq $script:RoboGo.Job) 'question: a mirror that is not confirmed does not start'
+    Assert-Equal 1 $script:Asked.Count 'question: it was asked once'
+    Assert-True (($script:Asked[0] -like 'Mirror deletes*') -and $script:Asked[0].Contains($src) -and $script:Asked[0].Contains((Join-Path $root 'dstm'))) 'question: with the warning and both folders'
+    $script:Answer = $true
+    Start-RoboGoRun
+    Step-UntilIdle
+    Assert-True ($ui.TxtStatus.Text -like 'Done. Files copied: 13 *') 'question: confirmed, it runs'
+    Assert-True (Test-Path -LiteralPath (Join-Path $root 'dstm\sub\g.bin')) 'question: and copies'
+    $ui.RbCopy.IsChecked = $true
+    $script:Asked.Clear()
+
+    # --- a destination that is too small ---
+    $script:FakeFree = 1000
+    $script:Answer = $false
+    $ui.TxtDest.Text = Join-Path $root 'dstfull'
+    $signalsBefore = $script:Signals.Count
+    Start-RoboGoRun
+    Step-UntilIdle
+    Assert-True ($null -eq $script:RoboGo.Job) 'free space: declined, the job is over after the scan'
+    Assert-True (($script:Asked.Count -eq 1) -and ($script:Asked[0] -like 'The job needs 6.6 MB, but the destination has only 1000 B free.*Run it anyway?')) 'free space: the question names what is needed and what is there'
+    Assert-Equal 'Not started. The job needs 6.6 MB, the destination has 1000 B free.' $ui.TxtStatus.Text 'free space: the status line says why nothing ran'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $root 'dstfull'))) 'free space: nothing was copied'
+    Assert-Equal 'True|False|None' (([string]$ui.BtnRun.IsEnabled, [string]$ui.Bar.IsIndeterminate, (Get-Taskbar $ui)) -join '|') 'free space: the window is idle again'
+    Assert-Equal $workingLogsBefore (Get-WorkingLogCount) 'free space: the log of the scan is gone'
+    Assert-Equal $signalsBefore $script:Signals.Count 'free space: no done signal for a job that never ran'
+    $script:Answer = $true
+    Start-RoboGoRun
+    Step-UntilIdle
+    Assert-True (($script:Asked.Count -eq 2) -and ($ui.TxtStatus.Text -like 'Done. Files copied: 13 *')) 'free space: with a yes it runs anyway'
+    $script:FakeFree = $null
+    $script:Asked.Clear()
 
     # --- dry run ---
     $ui.TxtDest.Text = Join-Path $root 'dst2'
@@ -319,14 +466,65 @@ try {
     Assert-True ($ui.TxtPercent.Text -match '^\d+\.\d%$') 'live: percent with a decimal point'
     Assert-True ($ui.TxtData.Text -like '* / 25.7 MB') 'live: data counter shows done and total'
     Assert-True ($ui.TxtCurrent.Text -like '*a-slow.bin') 'live: the current file is shown'
+    Assert-Equal 'Normal' (Get-Taskbar $ui) 'taskbar: a real share during the copy'
+    Assert-True (($ui.Window.TaskbarItemInfo.ProgressValue -ge 0.05) -and ($ui.Window.TaskbarItemInfo.ProgressValue -lt 1)) 'taskbar: and it follows the bar'
     Save-WindowPng $ui (Join-Path $shots 'ui-running.png')
     Assert-Rendered (Join-Path $shots 'ui-running.png') 'render: the running state is drawn'
+
+    # --- the command is four lines long here: the tape shows two ---
+    $lineHeight = $ui.CmdPanel.Children[0].DesiredSize.Height
+    Assert-Equal 'Visible|SHOW ALL' ([string]$ui.BtnTape.Visibility + '|' + [string]$ui.BtnTape.Content) 'tape: a long command gets SHOW ALL'
+    Assert-True (($ui.TapeClip.ActualHeight -le (2 * $lineHeight + 1)) -and ($ui.CmdPanel.Children.Count -gt 12)) 'tape: only two lines of it are shown'
+    Assert-Equal 'Visible' ([string]$ui.TapeMore.Visibility) 'tape: three dots mark the place where it is cut'
+    Switch-RoboGoTape
+    $ui.Window.UpdateLayout()
+    Assert-Equal 'SHOW LESS' $ui.BtnTape.Content 'tape: the button turns into SHOW LESS'
+    Assert-Equal 'Collapsed' ([string]$ui.TapeMore.Visibility) 'tape: no dots on a whole command'
+    Assert-True ($ui.TapeClip.ActualHeight -ge (3 * $lineHeight - 1)) 'tape: and the whole command is there'
+    Switch-RoboGoTape
+    $ui.Window.UpdateLayout()
+    Assert-True ($ui.TapeClip.ActualHeight -le (2 * $lineHeight + 1)) 'tape: back to two lines'
+    Assert-True ($ui.TxtLog.ActualHeight -ge 60) 'tape: which leaves the log box its room even with long paths'
+
     Stop-RoboGoRun
     Step-UntilIdle 15
     Assert-True ($null -eq $script:RoboGo.Job) 'cancel: the job ends'
+    Assert-Equal 'warn' $script:Signals[$script:Signals.Count - 1] 'done signal: a cancelled job signals a warning'
     Assert-True ($ui.TxtStatus.Text -like 'Cancelled.*') 'cancel: verdict'
     Assert-True ($ui.TxtPercent.Text -ne '100%') 'cancel: never claims 100%'
     Assert-Equal 'True' $ui.BtnRun.IsEnabled 'cancel: inputs are unlocked'
+
+    # --- a file that cannot be read: FAILED and the view of the failures ---
+    $ui.TxtDest.Text = Join-Path $root 'dstfail'
+    $ui.TxtExtra.Text = ''
+    $ui.TxtThreads.Text = '8'
+    $ui.TxtRetries.Text = '0'
+    $lock = [System.IO.File]::Open((Join-Path $src 'f1.bin'), 'Open', 'ReadWrite', 'None')
+    try {
+        Start-RoboGoRun
+        Step-UntilIdle
+    }
+    finally {
+        $lock.Close()
+    }
+    Assert-True ($ui.TxtStatus.Text -like 'Finished with errors. Files copied: 13 *FAILED: 1.*') 'failed: the verdict counts the failure'
+    Assert-Equal 'Visible|FAILED: 1' ([string]$ui.BtnFailed.Visibility + '|' + [string]$ui.BtnFailed.Content) 'failed: the button appears with the number'
+    Assert-Equal 'Error' (Get-Taskbar $ui) 'taskbar: red after a job with failures'
+    Assert-Equal 'error' $script:Signals[$script:Signals.Count - 1] 'done signal: a failed job signals an error'
+    Assert-True ($ui.TxtLog.Text -like '*g.bin*') 'failed: the log box still shows the whole log'
+    Switch-RoboGoFailed
+    $failedLines = @($ui.TxtLog.Text -split [Environment]::NewLine | Where-Object { $_ -ne '' })
+    Assert-Equal 2 $failedLines.Count 'failed: the view lists the failure and nothing else, on two short lines'
+    Assert-True ($failedLines[0] -like 'Copying File *\f1.bin') 'failed: first what was being done with which file'
+    Assert-True ($failedLines[1] -match '^    \d+ \(0x[0-9A-Fa-f]{8}\)  \S') 'failed: below it, indented, the error code and what Windows said'
+    Assert-Equal 'FULL LOG' $ui.BtnFailed.Content 'failed: the button offers the way back'
+    Copy-RoboGoLog
+    Assert-True (($script:Clip -like '*f1.bin*') -and ($script:Clip -notlike '*g.bin*')) 'failed: COPY LOG copies what is shown'
+    Save-WindowPng $ui (Join-Path $shots 'ui-failed.png')
+    Assert-Rendered (Join-Path $shots 'ui-failed.png') 'render: the failed view is drawn'
+    Switch-RoboGoFailed
+    Assert-True (($ui.TxtLog.Text -like '*g.bin*') -and ($ui.BtnFailed.Content -eq 'FAILED: 1')) 'failed: FULL LOG brings everything back'
+    $ui.TxtRetries.Text = '2'
 
     # --- without a scan the total is unknown ---
     $ui.TxtDest.Text = Join-Path $root 'dst4'
@@ -338,6 +536,7 @@ try {
     $script:RoboGo.Settings.LogFileMaxMB = 0.001
     Start-RoboGoRun
     Assert-Equal 'Run' $script:RoboGo.Phase 'no scan: goes straight to the run'
+    Assert-Equal 'Collapsed' ([string]$ui.BtnFailed.Visibility) 'failed: a new job starts without the button'
     Assert-Equal 'True' $ui.Bar.IsIndeterminate 'no scan: the bar sweeps'
     Step-UntilIdle
     Assert-True ($ui.TxtStatus.Text -like 'Done. Files copied: 14 *') 'no scan: still finishes with a verdict'
@@ -362,21 +561,48 @@ try {
     $ui.TxtThreads.Text = '4'
     Assert-True ((Get-CommandText $ui) -like '* /MT:4 *') 'settings: the window keeps working after that'
 
+    # --- the window on the taskbar: one identity for pin and window ---
+    Assert-True (Set-RoboTaskbarIdentity $ui.Window) 'identity: the window takes its taskbar identity'
+    $identity = (Get-RoboTaskbarIdentity $ui.Window) -split '\|'
+    Assert-Equal 'Czak89.RoboGo|RoboGo' ($identity[0] + '|' + $identity[2]) 'identity: application id and display name'
+    Assert-Equal ('"' + (Get-RoboLauncherPath) + '"') $identity[1] 'identity: a pin of the window starts the launcher'
+    Assert-True ($identity[3] -like '*\RoboGo.ico,0') 'identity: with the RoboGo icon'
+    Clear-RoboTaskbarIdentity $ui.Window
+    Assert-Equal '|||' (Get-RoboTaskbarIdentity $ui.Window) 'identity: cleared again before the window goes'
+
+    # --- closing remembers the fields and the place, but never the mode ---
+    $ui.RbMirror.IsChecked = $true
+    $ui.TxtXD.Text = 'cache'
+    $lastSource = $ui.TxtSource.Text
     $script:RoboGo.Timer.Stop()
     $ui.Window.Close()
+    $saved = Read-RoboSettings
+    Assert-Equal ($lastSource + '|cache|4') (($saved.Last.Source, $saved.Last.ExcludeDirs, $saved.Last.Threads) -join '|') 'close: the fields are saved'
+    Assert-True (($null -ne $saved.Window) -and ($saved.Window.Width -eq 760)) 'close: and the window rectangle'
+    Assert-True ((Get-Content -LiteralPath (Get-RoboSettingsPath) -Raw) -notmatch 'Mirror|"Mode"') 'close: the mode is not written anywhere'
 
     # --- a new window picks up the saved choices ---
-    [void](Save-RoboSettings @{ Language = 'xx'; KeepLog = $true })
+    $saved.Language = 'xx'
+    $saved.KeepLog = $true
+    [void](Save-RoboSettings $saved)
     $second = New-RoboGoWindow
     Initialize-RoboGoWindow $second
     Assert-Equal 'XX|True|OD' ([string]$second.BtnLang.Content + '|' + [string]$second.ChkKeepLog.IsChecked + '|' + $second.LblFrom.Text) 'settings: language and Keep log file are restored at the next start'
+    Assert-Equal ($lastSource + '|cache|True') (($second.TxtSource.Text, $second.TxtXD.Text, [string]$second.RbCopy.IsChecked) -join '|') 'restore: the fields are back, and the mode is COPY although the last session ended on MIRROR'
+    Assert-True (-not (Restore-RoboGoWindow $second $saved.Window)) 'placement: the off-screen spot of the test window is not taken over'
     $script:RoboGo.Timer.Stop()
     [void](Set-RoboLanguage 'en')
     Write-Host ('       screenshots: ' + $shots)
 }
 finally {
+    # a test that broke off in the middle of a job must not leave robocopy running
+    if (($null -ne $script:RoboGo) -and ($null -ne $script:RoboGo.Job)) {
+        Stop-RoboJob $script:RoboGo.Job
+        [void](Close-RoboJobLog $script:RoboGo.Job)
+    }
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
     if (Test-Path -LiteralPath $env:ROBOGO_HOME) { Remove-Item -LiteralPath $env:ROBOGO_HOME -Recurse -Force }
+    $env:ROBOGO_SENDTO = $null
 }
 
 exit (Complete-Tests 'Ui')
