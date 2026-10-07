@@ -19,11 +19,354 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:RoboGoVersion = '0.1.0'
+$script:RoboGoVersion = '0.2.0'
 $script:RoboExe = Join-Path $env:SystemRoot 'System32\robocopy.exe'
 $script:Inv = [System.Globalization.CultureInfo]::InvariantCulture
 # Switches that would break progress tracking or keep robocopy from ever exiting.
 $script:RoboBlockedSwitches = @('/LOG', '/UNILOG', '/NFL', '/NS', '/NC', '/NP', '/NJS', '/QUIT', '/MON', '/MOT', '/JOB', '/SAVE')
+
+# The program folder holds everything RoboGo writes (settings.json, logs\) and the language
+# files it reads (lang\), so the folder can be moved or copied as a whole. ROBOGO_HOME names
+# another folder for those; the tests use it to stay out of the real one.
+$script:RoboAppDir = $PSScriptRoot
+$script:RoboDataDir = $PSScriptRoot
+if (-not [string]::IsNullOrEmpty($env:ROBOGO_HOME)) { $script:RoboDataDir = $env:ROBOGO_HOME }
+$script:RoboLanguage = 'en'
+$script:RoboTextOverlay = @{}
+
+# ============================================================================
+# 0. Texts, languages, settings
+#    Every text the app itself shows lives in this table. A lang\<code>.json file
+#    with the same keys overrides it for that language (tools\Export-Language.ps1
+#    writes one). {0}, {1} are filled in by the code. Robocopy's own output is not
+#    translated.
+# ============================================================================
+
+$script:RoboText = @{
+    # labels
+    'ui.subtitle'      = 'robocopy, minus the typing'
+    'ui.paths'         = 'PATHS'
+    'ui.options'       = 'OPTIONS'
+    'ui.command'       = 'COMMAND'
+    'ui.progress'      = 'PROGRESS'
+    'ui.from'          = 'FROM'
+    'ui.to'            = 'TO'
+    'ui.browse'        = 'BROWSE'
+    'ui.copy'          = 'COPY'
+    'ui.mirror'        = 'MIRROR'
+    'ui.move'          = 'MOVE'
+    'ui.threads'       = 'THREADS'
+    'ui.retries'       = 'RETRIES'
+    'ui.wait'          = 'WAIT S'
+    'ui.subfolders'    = 'Subfolders'
+    'ui.junctions'     = 'Skip junctions'
+    'ui.newer'         = 'Keep newer files'
+    'ui.restartable'   = 'Restartable'
+    'ui.skipFiles'     = 'SKIP FILES'
+    'ui.skipDirs'      = 'SKIP FOLDERS'
+    'ui.extra'         = 'EXTRA'
+    'ui.copyCommand'   = 'COPY'
+    'ui.scan'          = 'Scan first'
+    'ui.keepLog'       = 'Keep log file'
+    'ui.dryRun'        = 'DRY RUN'
+    'ui.run'           = 'RUN'
+    'ui.cancel'        = 'CANCEL'
+    'ui.hideLog'       = 'HIDE LOG'
+    'ui.showLog'       = 'SHOW LOG'
+    'ui.copyLog'       = 'COPY LOG'
+    'ui.openLog'       = 'OPEN LOG'
+    'ui.files'         = 'FILES'
+    'ui.data'          = 'DATA'
+    'ui.speed'         = 'SPEED'
+    'ui.eta'           = 'ETA'
+    'ui.took'          = 'TOOK'
+    'ui.helpSwitches'  = 'USEFUL SWITCHES'
+    'ui.helpNote'      = 'Tick a switch to add it to EXTRA, untick it to remove it. Values such as 7 or *.jpg are examples: edit them in the EXTRA field.'
+    'ui.helpSetups'    = 'RECOMMENDED SETUPS'
+    'ui.helpSetupNote' = 'Click one to set THREADS, Restartable and its switches.'
+
+    # example texts shown in empty fields
+    'ph.source'        = 'e.g. D:\Photos'
+    'ph.dest'          = 'e.g. \\nas\backup\Photos'
+    'ph.skipFiles'     = 'e.g. *.tmp; thumbs.db'
+    'ph.skipDirs'      = 'e.g. node_modules; .git'
+    'ph.extra'         = 'e.g. *.jpg /MAXAGE:7'
+
+    # tooltips
+    'tip.source'       = 'The folder to copy from. Type, paste, browse, or drop a folder here. Robocopy copies what is inside it, not the folder itself.'
+    'tip.dest'         = 'The folder to copy into. It is created if it does not exist.'
+    'tip.copy'         = 'Add and update files in TO. Nothing is deleted.'
+    'tip.mirror'       = '/MIR  make TO identical to FROM. Whatever is extra in TO is deleted.'
+    'tip.move'         = '/MOVE  copy, then delete from FROM.'
+    'tip.threads'      = '/MT:n  files copied in parallel. 1 turns it off.'
+    'tip.retries'      = '/R:n  retries per failed file. Robocopy''s own default is one million.'
+    'tip.wait'         = '/W:n  seconds to wait between retries.'
+    'tip.subfolders'   = '/E  include subfolders, empty ones too.'
+    'tip.junctions'    = '/XJ  do not follow junction points. Avoids endless loops in user profiles.'
+    'tip.newer'        = '/XO  do not overwrite a file in TO with an older one from FROM.'
+    'tip.restartable'  = '/Z  resume a half-copied file after a network drop. Slower.'
+    'tip.skipFiles'    = '/XF  file names or patterns to leave out, separated by ;'
+    'tip.skipDirs'     = '/XD  folder names or paths to leave out, separated by ;'
+    'tip.extra'        = 'Any other robocopy switches or file filters, added exactly as typed.'
+    'tip.help'         = 'Useful switches and recommended setups.'
+    'tip.copyCommand'  = 'Copy the command to the clipboard.'
+    'tip.scan'         = 'Counts what needs copying before the real run, which gives an exact percent and ETA. Turn it off for huge trees: you then get counters but no percent.'
+    'tip.keepLog'      = 'Keep the full robocopy log of every job in the logs folder next to RoboGo. Off: the log is only shown here.'
+    'tip.dryRun'       = '/L  list what would happen without copying or deleting anything.'
+    'tip.copyLog'      = 'Copy the log shown here to the clipboard.'
+    'tip.openLog'      = 'Open the kept log file of the last job.'
+    'tip.language'     = 'Language'
+
+    # status line and log notes
+    'status.ready'         = 'Ready.'
+    'status.scanning'      = 'Scanning: counting what needs to be copied...'
+    'status.dryRun'        = 'Dry run: listing what would happen. Nothing is changed.'
+    'status.copying'       = 'Copying...'
+    'status.copyingErrors' = 'Copying... {0} error(s) so far, see the log.'
+    'status.stopping'      = 'Stopping...'
+    'status.copied'        = 'Command copied to the clipboard.'
+    'status.logCopied'     = 'Log copied to the clipboard.'
+    'status.droppedFile'   = 'That was a file, so its folder was taken.'
+    'status.error'         = 'Unexpected error: {0}'
+    'status.settings'      = 'The setting could not be saved: the RoboGo folder is not writable.'
+    'log.scan'             = 'Scan: {0} file(s), {1} to copy.'
+    'log.scanNoTotals'     = 'Scan: no totals found, running without percent.'
+    'log.saved'            = 'Log saved: {0}'
+
+    # warnings for modes that delete
+    'danger.mirror'    = 'Mirror deletes everything in the destination that is not in the source.'
+    'danger.move'      = 'Move deletes the files from the source after copying them.'
+
+    # reasons a job cannot start
+    'problem.source'        = 'Pick a source folder.'
+    'problem.sourceMissing' = 'Source folder does not exist.'
+    'problem.dest'          = 'Pick a destination folder.'
+    'problem.same'          = 'Source and destination are the same folder.'
+    'problem.inside'        = 'Destination is inside the source folder.'
+    'problem.mirrorInside'  = 'Mirror would delete the source, because it sits inside the destination.'
+    'problem.threads'       = 'Threads must be a number from 1 to 128.'
+    'problem.retries'       = 'Retries must be a number from 0 to 1000000.'
+    'problem.wait'          = 'Wait must be a number of seconds from 0 to 3600.'
+    'problem.blocked'       = 'Extra switches: {0} is not supported, RoboGo needs robocopy''s standard log output.'
+    'problem.ipg'           = 'Extra switches: /IPG only works with 1 thread. Set THREADS to 1.'
+
+    # result of a job
+    'verdict.cancelled'     = 'Cancelled. Files that were already copied stay in the destination.'
+    'verdict.copied'        = 'Copied {0} file(s), {1}'
+    'verdict.wouldCopy'     = 'Would copy {0} file(s), {1}'
+    'verdict.skipped'       = ', {0} skipped'
+    'verdict.failed'        = ', {0} FAILED'
+    'verdict.extrasWould'   = ', {0} extra item(s) would be deleted from the destination'
+    'verdict.extrasDeleted' = ', {0} extra item(s) deleted from the destination'
+    'verdict.extrasLeft'    = ', {0} extra item(s) in the destination left alone'
+    'verdict.fatal'         = 'Fatal error (robocopy exit code {0}). The job did not run properly: check the paths and the log.'
+    'verdict.errors'        = 'Finished with errors. {0} See the log for the files that failed.'
+    'verdict.dry'           = 'Dry run, nothing was changed. {0}'
+    'verdict.mismatch'      = 'Done, but some items are mismatched (a file where a folder is expected, or the reverse). {0}'
+    'verdict.done'          = 'Done. {0}'
+    'verdict.nothing'       = 'Nothing to copy, the destination is already up to date. {0}'
+
+    # dialogs
+    'dialog.confirmTip'  = 'DRY RUN shows what would happen without touching anything.'
+    'dialog.confirmAsk'  = 'Run it for real?'
+    'dialog.closing'     = 'A job is still running. Stop it and close RoboGo?'
+    'dialog.pickSource'  = 'Pick the folder to copy FROM'
+    'dialog.pickDest'    = 'Pick the folder to copy TO'
+    'dialog.startFail'   = 'RoboGo could not start.'
+
+    # help panel: switches
+    'help.filter'    = 'Copy only files of this type. Any name or pattern works, several are allowed.'
+    'help.xa'        = 'Skip hidden and system files.'
+    'help.maxage'    = 'Only files changed in the last 7 days.'
+    'help.minage'    = 'Only files not changed for at least 30 days.'
+    'help.max'       = 'Only files up to 100 MB. The size is given in bytes.'
+    'help.lev'       = 'Only the top 2 levels of the folder tree.'
+    'help.j'         = 'Unbuffered copying. Faster for very large files, slower for small ones.'
+    'help.fft'       = 'Tolerate 2-second time differences. Stops needless re-copying to a NAS, Linux or exFAT.'
+    'help.dst'       = 'Tolerate the 1-hour daylight saving shift some FAT and exFAT drives show.'
+    'help.dcopy'     = 'Keep the dates of folders too. Without it copied folders get today''s date.'
+    'help.compress'  = 'Ask for network compression when both ends support it.'
+    'help.ipg'       = 'Pause 50 ms between blocks to leave bandwidth for others. Needs THREADS 1.'
+    'help.sl'        = 'Copy symbolic links as links instead of the files they point to.'
+    'help.create'    = 'Create the folder tree and empty files only, no data.'
+    'help.is'        = 'Copy files again even when they look identical.'
+
+    # help panel: setups
+    'setup.nas'      = 'NAS or network share: restartable, 2-second time tolerance, 8 threads.'
+    'setup.big'      = 'A few very large files (video, disk images): unbuffered, 1 thread.'
+    'setup.small'    = 'Many small files between fast drives: 16 threads.'
+    'setup.usb'      = 'USB stick or SD card (FAT, exFAT): time tolerance, 1 thread.'
+    'setup.default'  = 'Back to the defaults: 8 threads, not restartable, setup switches removed.'
+}
+
+function Get-RoboText {
+    # The text for a key in the current language. Falls back to English, then to the key.
+    param([string]$Key, [object[]]$Values)
+    $text = $null
+    if ($script:RoboTextOverlay.ContainsKey($Key)) { $text = [string]$script:RoboTextOverlay[$Key] }
+    if ([string]::IsNullOrEmpty($text)) {
+        if ($script:RoboText.ContainsKey($Key)) { $text = [string]$script:RoboText[$Key] } else { $text = $Key }
+    }
+    if (($null -ne $Values) -and ($Values.Count -gt 0)) { return [string]::Format($script:Inv, $text, $Values) }
+    return $text
+}
+
+function Get-RoboLanguageDir {
+    return (Join-Path $script:RoboDataDir 'lang')
+}
+
+function Get-RoboLanguages {
+    # English is built in. Every lang\<code>.json adds a language.
+    $codes = New-Object System.Collections.Generic.List[string]
+    $codes.Add('en')
+    $dir = Get-RoboLanguageDir
+    if (Test-Path -LiteralPath $dir -PathType Container) {
+        foreach ($file in (Get-ChildItem -LiteralPath $dir -Filter '*.json' -File | Sort-Object Name)) {
+            $code = $file.BaseName.ToLowerInvariant()
+            if (-not $codes.Contains($code)) { $codes.Add($code) }
+        }
+    }
+    return , $codes.ToArray()
+}
+
+function Set-RoboLanguage {
+    # Makes a language current and returns its code. A missing or unreadable language file
+    # leaves the app in English.
+    param([string]$Code)
+    $language = ([string]$Code).Trim().ToLowerInvariant()
+    $overlay = @{}
+    if (($language -ne 'en') -and ($language -ne '')) {
+        $path = Join-Path (Get-RoboLanguageDir) ($language + '.json')
+        try {
+            $data = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            foreach ($entry in $data.PSObject.Properties) {
+                if (($entry.Value -is [string]) -and ($entry.Value -ne '')) { $overlay[$entry.Name] = $entry.Value }
+            }
+        }
+        catch {
+            $language = 'en'
+            $overlay = @{}
+        }
+    }
+    if ($language -eq '') { $language = 'en' }
+    $script:RoboLanguage = $language
+    $script:RoboTextOverlay = $overlay
+    return $language
+}
+
+function Get-RoboSettingsPath {
+    return (Join-Path $script:RoboDataDir 'settings.json')
+}
+
+function Read-RoboSettings {
+    # The saved choices, or the defaults when there is no usable settings file.
+    $settings = @{ Language = 'en'; KeepLog = $false }
+    $path = Get-RoboSettingsPath
+    if (Test-Path -LiteralPath $path) {
+        try {
+            $data = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            if (($null -ne $data.PSObject.Properties['Language']) -and ($data.Language -is [string])) { $settings.Language = $data.Language }
+            if (($null -ne $data.PSObject.Properties['KeepLog']) -and ($data.KeepLog -is [bool])) { $settings.KeepLog = $data.KeepLog }
+        }
+        catch { }
+    }
+    return $settings
+}
+
+function Save-RoboSettings {
+    # Writes settings.json next to the program. Returns $false when the folder is not writable.
+    param([hashtable]$Settings)
+    $saved = $false
+    try {
+        $language = ([string]$Settings.Language).Replace('\', '').Replace('"', '')
+        $keep = 'false'
+        if ($Settings.KeepLog) { $keep = 'true' }
+        $json = '{' + [Environment]::NewLine + '  "Language": "' + $language + '",' + [Environment]::NewLine + '  "KeepLog": ' + $keep + [Environment]::NewLine + '}' + [Environment]::NewLine
+        [System.IO.File]::WriteAllText((Get-RoboSettingsPath), $json, (New-Object System.Text.UTF8Encoding $false))
+        $saved = $true
+    }
+    catch { }
+    return $saved
+}
+
+function Get-RoboHelpSwitches {
+    # The switches offered in the help panel. Token is what goes into EXTRA.
+    return @(
+        @{ Token = '*.jpg'; Key = 'help.filter' }
+        @{ Token = '/XA:SH'; Key = 'help.xa' }
+        @{ Token = '/MAXAGE:7'; Key = 'help.maxage' }
+        @{ Token = '/MINAGE:30'; Key = 'help.minage' }
+        @{ Token = '/MAX:104857600'; Key = 'help.max' }
+        @{ Token = '/LEV:2'; Key = 'help.lev' }
+        @{ Token = '/J'; Key = 'help.j' }
+        @{ Token = '/FFT'; Key = 'help.fft' }
+        @{ Token = '/DST'; Key = 'help.dst' }
+        @{ Token = '/DCOPY:DAT'; Key = 'help.dcopy' }
+        @{ Token = '/COMPRESS'; Key = 'help.compress' }
+        @{ Token = '/IPG:50'; Key = 'help.ipg' }
+        @{ Token = '/SL'; Key = 'help.sl' }
+        @{ Token = '/CREATE'; Key = 'help.create' }
+        @{ Token = '/IS'; Key = 'help.is' }
+    )
+}
+
+function Get-RoboHelpSetups {
+    # Recommended combinations. Extra lists the switches the setup wants in EXTRA.
+    return @(
+        @{ Key = 'setup.nas'; Threads = 8; Restartable = $true; Extra = '/FFT' }
+        @{ Key = 'setup.big'; Threads = 1; Restartable = $false; Extra = '/J' }
+        @{ Key = 'setup.small'; Threads = 16; Restartable = $false; Extra = '' }
+        @{ Key = 'setup.usb'; Threads = 1; Restartable = $false; Extra = '/FFT /DST' }
+        @{ Key = 'setup.default'; Threads = 8; Restartable = $false; Extra = '' }
+    )
+}
+
+function Test-RoboExtraToken {
+    # Is this switch (by name) or file filter (by exact text) in the EXTRA text?
+    param([string]$Extra, [string]$Token)
+    $name = ($Token -split ':')[0]
+    foreach ($piece in (([string]$Extra) -split '\s+')) {
+        if ($piece -eq '') { continue }
+        if ($Token.StartsWith('/')) {
+            if ((($piece -split ':')[0]) -eq $name) { return $true }
+        }
+        elseif ($piece -eq $Token) { return $true }
+    }
+    return $false
+}
+
+function Switch-RoboExtraToken {
+    # Adds the token to the EXTRA text, or removes it when it is already there. A switch is
+    # recognised by its name (the part before the colon), a file filter by its exact text.
+    param([string]$Extra, [string]$Token)
+    $name = ($Token -split ':')[0]
+    $kept = New-Object System.Collections.Generic.List[string]
+    $found = $false
+    foreach ($piece in (([string]$Extra) -split '\s+')) {
+        if ($piece -eq '') { continue }
+        $same = $false
+        if ($Token.StartsWith('/')) { $same = ((($piece -split ':')[0]) -eq $name) } else { $same = ($piece -eq $Token) }
+        if ($same) { $found = $true } else { $kept.Add($piece) }
+    }
+    if (-not $found) { $kept.Add($Token) }
+    return ($kept -join ' ')
+}
+
+function Get-RoboSetupExtra {
+    # The EXTRA text after applying a setup: switches that belong to any setup are taken out,
+    # the ones of this setup are put in, everything else the user typed stays.
+    param([string]$Extra, [string]$SetupExtra)
+    $result = [string]$Extra
+    foreach ($setup in (Get-RoboHelpSetups)) {
+        foreach ($token in ($setup.Extra -split '\s+')) {
+            if (($token -ne '') -and (Test-RoboExtraToken $result $token)) { $result = Switch-RoboExtraToken $result $token }
+        }
+    }
+    foreach ($token in (([string]$SetupExtra) -split '\s+')) {
+        if (($token -ne '') -and (-not (Test-RoboExtraToken $result $token))) { $result = Switch-RoboExtraToken $result $token }
+    }
+    return (($result -split '\s+' | Where-Object { $_ -ne '' }) -join ' ')
+}
 
 # ============================================================================
 # 1. Pure helpers: paths, command line, validation, formatting
@@ -205,39 +548,44 @@ function Test-RoboRange {
 
 function Test-RoboOptions {
     # Returns the problems that stop a run, as sentences. Empty means good to go.
-    # -SkipFileSystem leaves out the disk check; the live preview uses it on every keystroke.
-    param($Options, [switch]$SkipFileSystem)
+    # -SkipFileSystem leaves out the disk check and -SkipEmptyPaths the two "pick a folder"
+    # problems; the live preview uses both, so it does not nag before anything is typed.
+    param($Options, [switch]$SkipFileSystem, [switch]$SkipEmptyPaths)
     $problems = New-Object System.Collections.Generic.List[string]
     $src = ConvertTo-RoboPath $Options.Source
     $dst = ConvertTo-RoboPath $Options.Destination
     if ($src -eq '') {
-        $problems.Add('Pick a source folder.')
+        if (-not $SkipEmptyPaths) { $problems.Add((Get-RoboText 'problem.source')) }
     }
     elseif ((-not $SkipFileSystem) -and (-not (Test-Path -LiteralPath $src -PathType Container))) {
-        $problems.Add('Source folder does not exist.')
+        $problems.Add((Get-RoboText 'problem.sourceMissing'))
     }
-    if ($dst -eq '') { $problems.Add('Pick a destination folder.') }
+    if (($dst -eq '') -and (-not $SkipEmptyPaths)) { $problems.Add((Get-RoboText 'problem.dest')) }
     if (($src -ne '') -and ($dst -ne '')) {
         $s = Get-RoboComparablePath $src
         $d = Get-RoboComparablePath $dst
         if ($s -eq $d) {
-            $problems.Add('Source and destination are the same folder.')
+            $problems.Add((Get-RoboText 'problem.same'))
         }
         elseif ($d.StartsWith($s + '\')) {
-            $problems.Add('Destination is inside the source folder.')
+            $problems.Add((Get-RoboText 'problem.inside'))
         }
         elseif (($Options.Mode -eq 'Mirror') -and $s.StartsWith($d + '\')) {
-            $problems.Add('Mirror would delete the source, because it sits inside the destination.')
+            $problems.Add((Get-RoboText 'problem.mirrorInside'))
         }
     }
-    if (-not (Test-RoboRange $Options.Threads 1 128)) { $problems.Add('Threads must be a number from 1 to 128.') }
-    if (-not (Test-RoboRange $Options.Retries 0 1000000)) { $problems.Add('Retries must be a number from 0 to 1000000.') }
-    if (-not (Test-RoboRange $Options.Wait 0 3600)) { $problems.Add('Wait must be a number of seconds from 0 to 3600.') }
+    if (-not (Test-RoboRange $Options.Threads 1 128)) { $problems.Add((Get-RoboText 'problem.threads')) }
+    if (-not (Test-RoboRange $Options.Retries 0 1000000)) { $problems.Add((Get-RoboText 'problem.retries')) }
+    if (-not (Test-RoboRange $Options.Wait 0 3600)) { $problems.Add((Get-RoboText 'problem.wait')) }
     foreach ($token in (([string]$Options.Extra) -split '\s+')) {
         if (-not $token.StartsWith('/')) { continue }
         $name = ($token.ToUpperInvariant() -split ':')[0].TrimEnd('+')
         if ($script:RoboBlockedSwitches -contains $name) {
-            $problems.Add("Extra switches: $name is not supported, RoboGo needs robocopy's standard log output.")
+            $problems.Add((Get-RoboText 'problem.blocked' $name))
+        }
+        elseif (($name -eq '/IPG') -and ([int]$Options.Threads -gt 1)) {
+            # robocopy itself refuses /IPG together with /MT
+            $problems.Add((Get-RoboText 'problem.ipg'))
         }
     }
     return , $problems.ToArray()
@@ -248,10 +596,10 @@ function Get-RoboDanger {
     param($Options)
     $extra = (' ' + [string]$Options.Extra + ' ').ToUpperInvariant()
     if (($Options.Mode -eq 'Mirror') -or ($extra -match '\s/(MIR|PURGE)\s')) {
-        return 'Mirror deletes everything in the destination that is not in the source.'
+        return (Get-RoboText 'danger.mirror')
     }
     if (($Options.Mode -eq 'Move') -or ($extra -match '\s/MOVE?\s')) {
-        return 'Move deletes the files from the source after copying them.'
+        return (Get-RoboText 'danger.move')
     }
     return ''
 }
@@ -453,38 +801,39 @@ function Get-RoboVerdict {
     # 16 fatal) and the summary into one sentence. Level is ok, warn or error.
     param([int]$ExitCode, $Summary, [switch]$DryRun, [switch]$Cancelled, [switch]$Mirror)
     if ($Cancelled) {
-        return @{ Level = 'warn'; Text = 'Cancelled. Files that were already copied stay in the destination.' }
+        return @{ Level = 'warn'; Text = (Get-RoboText 'verdict.cancelled') }
     }
     $detail = ''
     if ($Summary) {
-        $verb = $(if ($DryRun) { 'Would copy' } else { 'Copied' })
-        $detail = '{0} {1} file(s), {2}' -f $verb, $Summary.Files.Copied, (Format-RoboBytes $Summary.Bytes.Copied)
-        if ($Summary.Files.Skipped -gt 0) { $detail += (', {0} skipped' -f $Summary.Files.Skipped) }
-        if ($Summary.Files.Failed -gt 0) { $detail += (', {0} FAILED' -f $Summary.Files.Failed) }
+        $key = 'verdict.copied'
+        if ($DryRun) { $key = 'verdict.wouldCopy' }
+        $detail = Get-RoboText $key $Summary.Files.Copied, (Format-RoboBytes $Summary.Bytes.Copied)
+        if ($Summary.Files.Skipped -gt 0) { $detail += (Get-RoboText 'verdict.skipped' $Summary.Files.Skipped) }
+        if ($Summary.Files.Failed -gt 0) { $detail += (Get-RoboText 'verdict.failed' $Summary.Files.Failed) }
         $extras = $Summary.Files.Extras + $Summary.Dirs.Extras
         if ($extras -gt 0) {
-            if ($Mirror -and $DryRun) { $detail += (', {0} extra item(s) would be deleted from the destination' -f $extras) }
-            elseif ($Mirror) { $detail += (', {0} extra item(s) deleted from the destination' -f $extras) }
-            else { $detail += (', {0} extra item(s) in the destination left alone' -f $extras) }
+            if ($Mirror -and $DryRun) { $detail += (Get-RoboText 'verdict.extrasWould' $extras) }
+            elseif ($Mirror) { $detail += (Get-RoboText 'verdict.extrasDeleted' $extras) }
+            else { $detail += (Get-RoboText 'verdict.extrasLeft' $extras) }
         }
         $detail += '.'
     }
     if (($ExitCode -lt 0) -or ($ExitCode -ge 16)) {
-        return @{ Level = 'error'; Text = "Fatal error (robocopy exit code $ExitCode). The job did not run properly: check the paths and the log." }
+        return @{ Level = 'error'; Text = (Get-RoboText 'verdict.fatal' $ExitCode) }
     }
     if (($ExitCode -band 8) -ne 0) {
-        return @{ Level = 'error'; Text = ("Finished with errors. $detail See the log for the files that failed.").Replace('  ', ' ') }
+        return @{ Level = 'error'; Text = (Get-RoboText 'verdict.errors' $detail).Replace('  ', ' ') }
     }
     if ($DryRun) {
-        return @{ Level = 'ok'; Text = ("Dry run, nothing was changed. $detail").Trim() }
+        return @{ Level = 'ok'; Text = (Get-RoboText 'verdict.dry' $detail).Trim() }
     }
     if (($ExitCode -band 4) -ne 0) {
-        return @{ Level = 'warn'; Text = ("Done, but some items are mismatched (a file where a folder is expected, or the reverse). $detail").Trim() }
+        return @{ Level = 'warn'; Text = (Get-RoboText 'verdict.mismatch' $detail).Trim() }
     }
     if (($ExitCode -band 1) -ne 0) {
-        return @{ Level = 'ok'; Text = ("Done. $detail").Trim() }
+        return @{ Level = 'ok'; Text = (Get-RoboText 'verdict.done' $detail).Trim() }
     }
-    return @{ Level = 'ok'; Text = ("Nothing to copy, the destination is already up to date. $detail").Trim() }
+    return @{ Level = 'ok'; Text = (Get-RoboText 'verdict.nothing' $detail).Trim() }
 }
 
 # ============================================================================

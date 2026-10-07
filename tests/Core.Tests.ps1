@@ -1,8 +1,13 @@
 # Tests for the pure helpers: paths, quoting, command line, validation, formatting.
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'TestHarness.ps1')
+# The app keeps settings, kept logs and language files in its own folder. ROBOGO_HOME points
+# it at a throwaway folder, so the tests never touch the real one.
+$env:ROBOGO_HOME = Join-Path ([System.IO.Path]::GetTempPath()) ('RoboGoHomeTest-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $env:ROBOGO_HOME | Out-Null
 $app = Join-Path $PSScriptRoot '..\RoboGo.ps1'
 . $app -NoUI
+$utf8 = New-Object System.Text.UTF8Encoding $false
 
 # --- paths ---
 Assert-Equal 'C:\data' (ConvertTo-RoboPath ' "C:\data\" ') 'path: trims spaces, quotes and the trailing backslash'
@@ -131,4 +136,90 @@ Assert-Equal '1m 15s' (Format-RoboDuration 75) 'duration: minutes'
 Assert-Equal '1h 02m' (Format-RoboDuration 3725) 'duration: hours'
 Assert-Equal '--' (Format-RoboDuration -1) 'duration: unknown'
 
+# --- /IPG and the preview variant of the validation ---
+$o = New-RoboOptions
+$o.Source = 'C:\a'
+$o.Destination = 'C:\b'
+$o.Extra = '/IPG:50'
+Assert-Equal 'Extra switches: /IPG only works with 1 thread. Set THREADS to 1.' (Get-Problems $o) 'validate: /IPG with several threads is refused'
+$o.Threads = 1
+Assert-Equal '' (Get-Problems $o) 'validate: /IPG with one thread is fine'
+$o = New-RoboOptions
+$o.Threads = 0
+Assert-Equal 'Threads must be a number from 1 to 128.' ((Test-RoboOptions $o -SkipFileSystem -SkipEmptyPaths) -join '|') 'validate: -SkipEmptyPaths drops only the two pick-a-folder problems'
+
+# --- texts and languages ---
+Assert-Equal 'Ready.' (Get-RoboText 'status.ready') 'text: a known key gives its English text'
+Assert-Equal 'no.such.key' (Get-RoboText 'no.such.key') 'text: an unknown key gives the key itself'
+Assert-Equal 'Scan: 3 file(s), 1.5 KB to copy.' (Get-RoboText 'log.scan' 3, '1.5 KB') 'text: values are filled in'
+Assert-Equal 'en' ((Get-RoboLanguages) -join ',') 'languages: only English without a lang folder'
+$langDir = Join-Path $env:ROBOGO_HOME 'lang'
+New-Item -ItemType Directory -Force -Path $langDir | Out-Null
+$browse = 'Przegl' + [char]0x0105 + 'daj'
+[System.IO.File]::WriteAllText((Join-Path $langDir 'xx.json'), ('{ "_name": "Test", "status.ready": "Gotowe.", "ui.from": "", "ui.browse": "' + $browse + '" }'), $utf8)
+[System.IO.File]::WriteAllText((Join-Path $langDir 'bad.json'), '{ this is not json', $utf8)
+Assert-Equal 'en,bad,xx' ((Get-RoboLanguages) -join ',') 'languages: every lang\<code>.json adds one'
+Assert-Equal 'xx' (Set-RoboLanguage 'XX') 'languages: switching returns the active code'
+Assert-Equal 'Gotowe.' (Get-RoboText 'status.ready') 'languages: the language file wins'
+Assert-Equal $browse (Get-RoboText 'ui.browse') 'languages: the file is read as UTF-8'
+Assert-Equal 'FROM' (Get-RoboText 'ui.from') 'languages: an empty value falls back to English'
+Assert-Equal 'TO' (Get-RoboText 'ui.to') 'languages: a missing key falls back to English'
+Assert-Equal 'en' (Set-RoboLanguage 'bad') 'languages: a broken file falls back to English'
+Assert-Equal 'Ready.' (Get-RoboText 'status.ready') 'languages: and the English texts are back'
+Assert-Equal 'en' (Set-RoboLanguage 'zz') 'languages: an unknown code falls back to English'
+
+$plPath = Join-Path $PSScriptRoot '..\lang\pl.json'
+$pl = [System.IO.File]::ReadAllText($plPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+$plKeys = @($pl.PSObject.Properties | ForEach-Object { $_.Name } | Where-Object { $_ -ne '_name' } | Sort-Object)
+$enKeys = @($script:RoboText.Keys | Sort-Object)
+Assert-Equal ($enKeys -join '|') ($plKeys -join '|') 'language file: lang\pl.json has exactly the keys of the English table'
+Assert-True ($pl.PSObject.Properties['_name'] -and ($pl._name -ne '')) 'language file: it names its language'
+
+# --- settings ---
+Assert-Equal (Join-Path $env:ROBOGO_HOME 'settings.json') (Get-RoboSettingsPath) 'settings: the file lives in the program folder (ROBOGO_HOME here)'
+$s = Read-RoboSettings
+Assert-Equal 'en|False' ($s.Language + '|' + $s.KeepLog) 'settings: defaults without a file'
+$s.Language = 'xx'
+$s.KeepLog = $true
+Assert-True (Save-RoboSettings $s) 'settings: saving reports success'
+$s = Read-RoboSettings
+Assert-Equal 'xx|True' ($s.Language + '|' + $s.KeepLog) 'settings: what was saved comes back'
+[System.IO.File]::WriteAllText((Get-RoboSettingsPath), '{ broken', $utf8)
+$s = Read-RoboSettings
+Assert-Equal 'en|False' ($s.Language + '|' + $s.KeepLog) 'settings: a broken file gives the defaults'
+[System.IO.File]::WriteAllText((Get-RoboSettingsPath), '{ "Language": 5, "Other": 1 }', $utf8)
+$s = Read-RoboSettings
+Assert-Equal 'en|False' ($s.Language + '|' + $s.KeepLog) 'settings: wrong types and unknown entries are ignored'
+
+# --- switches in the EXTRA field ---
+Assert-Equal '/J' (Switch-RoboExtraToken '' '/J') 'token: added to an empty field'
+Assert-Equal '*.jpg /J' (Switch-RoboExtraToken '*.jpg' '/J') 'token: appended, the rest is kept'
+Assert-Equal '*.jpg' (Switch-RoboExtraToken '*.jpg /j' '/J') 'token: removed when present, ignoring case'
+Assert-Equal '/FFT' (Switch-RoboExtraToken '/maxage:30 /FFT' '/MAXAGE:7') 'token: a switch is recognised by its name, whatever its value'
+Assert-Equal '/J' (Switch-RoboExtraToken '/J *.jpg' '*.jpg') 'token: a file filter is matched by its exact text'
+Assert-Equal '/J *.jpg *.png' (Switch-RoboExtraToken '/J *.jpg' '*.png') 'token: another filter is simply added'
+Assert-True (Test-RoboExtraToken ' /dcopy:DAT ' '/DCOPY:DAT') 'token: presence is tested by name'
+Assert-True (-not (Test-RoboExtraToken '/JOB:x' '/J')) 'token: a longer switch name is not a match'
+Assert-Equal '*.jpg /FFT' (Get-RoboSetupExtra '*.jpg /J' '/FFT') 'setup: its switches replace those of another setup, the rest stays'
+Assert-Equal '*.jpg' (Get-RoboSetupExtra '*.jpg /fft /DST' '') 'setup: the default one only removes setup switches'
+
+# --- help data ---
+$switches = @(Get-RoboHelpSwitches)
+Assert-True ($switches.Count -ge 10) 'help: a useful number of switches'
+Assert-Equal 0 (@($switches | Where-Object { (Get-RoboText $_.Key) -eq $_.Key }).Count) 'help: every switch has an explanation'
+Assert-Equal 0 (@($switches | Where-Object { $script:RoboBlockedSwitches -contains (($_.Token -split ':')[0].ToUpperInvariant()) }).Count) 'help: no switch that RoboGo refuses'
+$o = New-RoboOptions
+$o.Source = 'C:\a'
+$o.Destination = 'C:\b'
+$o.Threads = 1
+$refused = @($switches | Where-Object { $o.Extra = $_.Token; (Test-RoboOptions $o -SkipFileSystem).Count -gt 0 })
+Assert-Equal 0 $refused.Count 'help: every switch passes the validation on its own'
+$setups = @(Get-RoboHelpSetups)
+Assert-True ($setups.Count -ge 4) 'help: several recommended setups'
+Assert-Equal 0 (@($setups | Where-Object { (Get-RoboText $_.Key) -eq $_.Key }).Count) 'help: every setup has a text'
+$o.Threads = 8
+$refused = @($setups | Where-Object { $o.Threads = $_.Threads; $o.Extra = $_.Extra; (Test-RoboOptions $o -SkipFileSystem).Count -gt 0 })
+Assert-Equal 0 $refused.Count 'help: every setup passes the validation'
+
+Remove-Item -LiteralPath $env:ROBOGO_HOME -Recurse -Force
 exit (Complete-Tests 'Core')
