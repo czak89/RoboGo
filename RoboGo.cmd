@@ -1,5 +1,6 @@
 @echo off
-rem RoboGo launcher. Starts the app without leaving a console window behind.
+rem Starts RoboGo without building anything. A console window flashes for a moment;
+rem RoboGo.exe (created by build.cmd) starts the app without that.
 rem Prefers PowerShell 7 (modern folder picker), falls back to Windows PowerShell 5.1.
 setlocal
 set "APP=%~dp0RoboGo.ps1"

@@ -3,6 +3,10 @@
 # through UI Automation: language button, help panel, a dry run, a copy without and with a
 # kept log. Everything the app writes goes to a throwaway ROBOGO_HOME.
 # Windows are on screen for about twenty seconds, so this is not part of Run-Tests.ps1.
+# Leave mouse and keyboard alone while it runs: the help panel closes when another window
+# takes the focus, exactly as it should, and the test then has nothing to look at.
+# -Mouse adds a few real clicks on the ? button. The pointer is moved for about three seconds.
+param([switch]$Mouse)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'TestHarness.ps1')
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Drawing
@@ -102,6 +106,19 @@ function Find-Popup {
     param($Window)
     $condition = New-Object System.Windows.Automation.PropertyCondition ([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'Popup')
     return $Window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+}
+function Open-HelpPanel {
+    # Clicks ? until the panel is up. It closes as soon as another window takes the focus,
+    # which on a desktop that is in use can happen right away, so this tries a few times.
+    param($Window)
+    foreach ($attempt in 1..3) {
+        Invoke-ControlClick $Window 'BtnHelp'
+        Wait-Until { $null -ne (Find-Popup $Window) } 2000
+        Start-Sleep -Milliseconds 300
+        $popup = Find-Popup $Window
+        if ($null -ne $popup) { return $popup }
+    }
+    return $null
 }
 function Set-ControlText {
     param($Window, [string]$Id, [string]$Text)
@@ -273,9 +290,7 @@ try {
     Assert-Equal 'EN|FROM' ((Get-ControlText $window 'BtnLang') + '|' + (Get-ControlText $window 'LblFrom')) 'live: and back'
 
     # --- help panel ---
-    Invoke-ControlClick $window 'BtnHelp'
-    Wait-Until { $null -ne (Find-Popup $window) }
-    $popup = Find-Popup $window
+    $popup = Open-HelpPanel $window
     Assert-True ($null -ne $popup) 'help: the ? button opens the panel'
     if ($null -ne $popup) {
         $panel = $popup.Current.BoundingRectangle
@@ -298,23 +313,28 @@ try {
     }
 
     # --- the help panel with the real mouse: a second click on ? and a click elsewhere close it ---
-    $cursor = New-Object RoboGoTest.Native+POINT
-    [void][RoboGoTest.Native]::GetCursorPos([ref]$cursor)
-    # the app ignores a click on ? for a quarter of a second after the panel closed
-    Start-Sleep -Milliseconds 500
-    if (Invoke-MouseClick $window 'BtnHelp' $new.Handle) {
-        Assert-True ($null -ne (Find-Popup $window)) 'mouse: a click on ? opens the panel'
-        [void](Invoke-MouseClick $window 'BtnHelp' $new.Handle)
-        Assert-True ($null -eq (Find-Popup $window)) 'mouse: a second click on ? closes it and it stays closed'
-        [void](Invoke-MouseClick $window 'BtnHelp' $new.Handle)
-        Assert-True ($null -ne (Find-Popup $window)) 'mouse: a third click opens it again'
-        [void](Invoke-MouseClick $window 'LblPaths' $new.Handle)
-        Assert-True ($null -eq (Find-Popup $window)) 'mouse: a click somewhere else in the window closes it'
+    if ($Mouse) {
+        $cursor = New-Object RoboGoTest.Native+POINT
+        [void][RoboGoTest.Native]::GetCursorPos([ref]$cursor)
+        # the app ignores a click on ? for a quarter of a second after the panel closed
+        Start-Sleep -Milliseconds 500
+        if (Invoke-MouseClick $window 'BtnHelp' $new.Handle) {
+            Assert-True ($null -ne (Find-Popup $window)) 'mouse: a click on ? opens the panel'
+            [void](Invoke-MouseClick $window 'BtnHelp' $new.Handle)
+            Assert-True ($null -eq (Find-Popup $window)) 'mouse: a second click on ? closes it and it stays closed'
+            [void](Invoke-MouseClick $window 'BtnHelp' $new.Handle)
+            Assert-True ($null -ne (Find-Popup $window)) 'mouse: a third click opens it again'
+            [void](Invoke-MouseClick $window 'LblPaths' $new.Handle)
+            Assert-True ($null -eq (Find-Popup $window)) 'mouse: a click somewhere else in the window closes it'
+        }
+        else {
+            Write-Host '[--] mouse: skipped, another window covers the ? button'
+        }
+        [void][RoboGoTest.Native]::SetCursorPos($cursor.X, $cursor.Y)
     }
     else {
-        Write-Host '[--] mouse: skipped, another window covers the ? button'
+        Write-Host '[--] mouse: real clicks on ? are skipped (run with -Mouse to include them)'
     }
-    [void][RoboGoTest.Native]::SetCursorPos($cursor.X, $cursor.Y)
 
     # --- typing into the fields reaches the event handlers ---
     Set-ControlText $window 'TxtSource' $src

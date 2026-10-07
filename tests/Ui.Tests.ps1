@@ -9,6 +9,12 @@ New-Item -ItemType Directory -Force -Path (Join-Path $env:ROBOGO_HOME 'lang') | 
 [System.IO.File]::WriteAllText((Join-Path $env:ROBOGO_HOME 'lang\xx.json'), '{ "_name": "Test", "ui.from": "OD", "ph.source": "np. D:\\Zdjecia", "status.ready": "Gotowe." }', (New-Object System.Text.UTF8Encoding $false))
 $app = Join-Path $PSScriptRoot '..\RoboGo.ps1'
 . $app -NoUI
+# The tests stay out of the real clipboard: they replace the one function that writes to it.
+$script:Clip = ''
+function Set-RoboClipboard {
+    param([string]$Text)
+    $script:Clip = $Text
+}
 $workingLogsBefore = @(Get-ChildItem -LiteralPath (Get-RoboLogDir) -Filter '*.log' -File).Count
 
 function Get-CommandText {
@@ -274,6 +280,18 @@ try {
     Save-WindowPng $ui (Join-Path $shots 'ui-done.png')
     Assert-Rendered (Join-Path $shots 'ui-done.png') 'render: the finished state is drawn'
 
+    # --- COPY and COPY LOG ---
+    Copy-RoboGoCommand
+    Assert-Equal (Get-RoboCommandLine (Get-RoboGoOptions $ui)) $script:Clip 'copy: COPY hands the command to the clipboard'
+    Assert-Equal 'Command copied to the clipboard.' $ui.TxtStatus.Text 'copy: and says so'
+    Copy-RoboGoLog
+    Assert-True ($script:Clip -like '> robocopy *g.bin*== Done. Copied 13 file(s)*') 'copy log: COPY LOG hands over what the log box shows'
+    Assert-Equal 'Log copied to the clipboard.' $ui.TxtStatus.Text 'copy log: and says so'
+    $script:Clip = ''
+    Clear-RoboGoLog
+    Copy-RoboGoLog
+    Assert-Equal '' $script:Clip 'copy log: an empty log box leaves the clipboard alone'
+
     # --- dry run ---
     $ui.TxtDest.Text = Join-Path $root 'dst2'
     Start-RoboGoRun -DryRun
@@ -329,6 +347,16 @@ try {
     Assert-True ($ui.TxtLog.Text.Contains($keptLogs[0].FullName)) 'logs: the log box names the saved file'
     Assert-Equal $workingLogsBefore (Get-WorkingLogCount) 'logs: and nothing stays in TEMP'
     Assert-Equal '' (Get-ClippedControls $ui) 'size: nothing is clipped after a job either'
+
+    # --- a settings file that cannot be written (a read-only program folder) ---
+    $settingsFile = Get-Item -LiteralPath (Get-RoboSettingsPath)
+    $settingsFile.IsReadOnly = $true
+    $ui.ChkKeepLog.IsChecked = $false
+    Assert-Equal 'The setting could not be saved: the RoboGo folder is not writable.' $ui.TxtStatus.Text 'settings: a choice that cannot be saved is reported'
+    Assert-Equal 'True' (Read-RoboSettings).KeepLog 'settings: and the file is left as it was'
+    $settingsFile.IsReadOnly = $false
+    $ui.TxtThreads.Text = '4'
+    Assert-True ((Get-CommandText $ui) -like '* /MT:4 *') 'settings: the window keeps working after that'
 
     $script:RoboGo.Timer.Stop()
     $ui.Window.Close()

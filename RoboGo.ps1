@@ -2,8 +2,9 @@
 .SYNOPSIS
     RoboGo: builds a robocopy command, runs it and tracks the progress.
 .DESCRIPTION
-    Start it with RoboGo.cmd (double-click). It needs nothing but Windows 10 or 11:
-    robocopy and WPF are part of the system.
+    Start it with RoboGo.exe (run build.cmd once to create it) or with RoboGo.cmd. It needs
+    nothing but Windows 10 or 11: PowerShell, WPF and robocopy are part of the system.
+    Everything it writes stays in its own folder: settings.json and, when logs are kept, logs\.
 .PARAMETER NoUI
     Only define the functions. The test scripts dot-source the file this way.
 .PARAMETER SelfTest
@@ -2003,13 +2004,27 @@ function Clear-RoboGoLog {
     $s.UI.TxtLog.Clear()
 }
 
+function Set-RoboClipboard {
+    # The one place that writes to the clipboard. The tests replace it, so they never
+    # touch what the user has copied.
+    param([string]$Text)
+    [System.Windows.Clipboard]::SetText($Text)
+}
+
+function Copy-RoboGoCommand {
+    # The COPY button: the command as shown goes to the clipboard.
+    $s = $script:RoboGo
+    Set-RoboClipboard (Get-RoboCommandLine (Get-RoboGoOptions $s.UI))
+    if ($null -eq $s.Job) { Set-RoboGoStatus 'status.copied' }
+}
+
 function Copy-RoboGoLog {
     # The COPY LOG button: what the log box shows goes to the clipboard.
     $s = $script:RoboGo
     Update-RoboGoLogView
     $text = $s.UI.TxtLog.Text
     if ($text -eq '') { return }
-    [System.Windows.Clipboard]::SetText($text)
+    Set-RoboClipboard $text
     if ($null -eq $s.Job) { Set-RoboGoStatus 'status.logCopied' }
 }
 
@@ -2424,12 +2439,7 @@ function Initialize-RoboGoWindow {
     $UI.BtnRun.Add_Click({ Invoke-RoboGoSafe { Start-RoboGoRun } })
     $UI.BtnDry.Add_Click({ Invoke-RoboGoSafe { Start-RoboGoRun -DryRun } })
     $UI.BtnCancel.Add_Click({ Invoke-RoboGoSafe { Stop-RoboGoRun } })
-    $UI.BtnCopyCmd.Add_Click({
-            Invoke-RoboGoSafe {
-                [System.Windows.Clipboard]::SetText((Get-RoboCommandLine (Get-RoboGoOptions $script:RoboGo.UI)))
-                if ($null -eq $script:RoboGo.Job) { Set-RoboGoStatus 'status.copied' }
-            }
-        })
+    $UI.BtnCopyCmd.Add_Click({ Invoke-RoboGoSafe { Copy-RoboGoCommand } })
     $UI.BtnToggleLog.Add_Click({ Invoke-RoboGoSafe { Switch-RoboGoLog } })
     $UI.BtnCopyLog.Add_Click({ Invoke-RoboGoSafe { Copy-RoboGoLog } })
     $UI.BtnOpenLog.Add_Click({
