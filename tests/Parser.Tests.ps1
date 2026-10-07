@@ -76,6 +76,22 @@ Assert-Equal 2 $s.SeenFiles 'retry: a retried file is seen once'
 Assert-Equal 1 $s.CompletedFiles 'retry: the failed file is not counted as copied'
 Assert-Equal 500 $s.CompletedBytes 'retry: only the good file adds bytes'
 Assert-True ($s.LastError -like '*ERROR 32*') 'retry: the last error line is kept'
+Assert-Equal 1 $s.Failures.Count 'failures: a file that fails twice is listed once'
+Assert-Equal 'Copying File C:\s\a.txt|32 (0x00000020)|Proces nie moze uzyskac dostepu do pliku.' (($s.Failures[0].What, $s.Failures[0].Code, $s.Failures[0].Detail) -join '|') 'failures: what was being done, the error code and the message of the next line'
+Update-RoboProgress $s @(
+    '2026/10/06 04:19:40 ERROR 5 (0x00000005) Accessing Source Directory C:\s\locked\',
+    'Access is denied.',
+    (New-FileLine '    New File  ' 10 'C:\s\z.txt'),
+    '2026/10/06 04:19:41 ERROR 5 (0x00000005) Copying File C:\s\z.txt'
+)
+Assert-Equal 3 $s.Failures.Count 'failures: every other path adds an entry'
+Assert-Equal '' $s.Failures[2].Detail 'failures: an entry whose message has not arrived yet has none'
+Update-RoboProgress $s @('Access is denied.')
+Assert-Equal 'Access is denied.' $s.Failures[2].Detail 'failures: the message may arrive with the next batch of lines'
+$lines = Get-RoboFailureLines $s
+Assert-Equal 3 $lines.Count 'failures: one line per entry'
+Assert-True (($lines[1] -like '*Accessing Source Directory C:\s\locked\*') -and ($lines[1] -like '*5 (0x00000005)*') -and ($lines[1] -like '*Access is denied.*')) 'failures: a line holds the path, the code and the message'
+Assert-Equal 0 (Get-RoboFailureLines (New-RoboProgress)).Count 'failures: none for a clean job'
 
 # --- extra items in the destination are not copies ---
 $s = New-RoboProgress -Threads 1 -DestinationPath 'C:\d'
@@ -145,11 +161,11 @@ $sum = @{
 }
 $v = Get-RoboVerdict -ExitCode 1 -Summary $sum
 Assert-Equal 'ok' $v.Level 'verdict: copied is ok'
-Assert-Equal 'Done. Copied 4 file(s), 64.0 MB, 3 extra item(s) in the destination left alone.' $v.Text 'verdict: copied, extras untouched'
+Assert-Equal 'Done. Files copied: 4 (64.0 MB). Extra items left alone in the destination: 3.' $v.Text 'verdict: copied, extras untouched'
 $v = Get-RoboVerdict -ExitCode 3 -Summary $sum -Mirror
-Assert-Equal 'Done. Copied 4 file(s), 64.0 MB, 3 extra item(s) deleted from the destination.' $v.Text 'verdict: mirror deleted the extras'
+Assert-Equal 'Done. Files copied: 4 (64.0 MB). Extra items deleted from the destination: 3.' $v.Text 'verdict: mirror deleted the extras'
 $v = Get-RoboVerdict -ExitCode 3 -Summary $sum -DryRun -Mirror
-Assert-Equal 'Dry run, nothing was changed. Would copy 4 file(s), 64.0 MB, 3 extra item(s) would be deleted from the destination.' $v.Text 'verdict: dry run of a mirror'
+Assert-Equal 'Dry run, nothing was changed. Files to copy: 4 (64.0 MB). Extra items that would be deleted from the destination: 3.' $v.Text 'verdict: dry run of a mirror'
 
 $bad = @{
     Dirs  = @{ Total = 3; Copied = 0; Skipped = 3; Mismatch = 0; Failed = 0; Extras = 0 }
@@ -158,7 +174,7 @@ $bad = @{
 }
 $v = Get-RoboVerdict -ExitCode 8 -Summary $bad
 Assert-Equal 'error' $v.Level 'verdict: a failed copy is an error'
-Assert-Equal 'Finished with errors. Copied 0 file(s), 0 B, 3 skipped, 1 FAILED. See the log for the files that failed.' $v.Text 'verdict: failure text'
+Assert-Equal 'Finished with errors. Files copied: 0 (0 B). Skipped: 3. FAILED: 1. See the log for the files that failed.' $v.Text 'verdict: failure text'
 
 $v = Get-RoboVerdict -ExitCode 0 -Summary $null
 Assert-Equal 'ok' $v.Level 'verdict: nothing to do is ok'

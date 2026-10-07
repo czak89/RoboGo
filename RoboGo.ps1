@@ -21,7 +21,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:RoboGoVersion = '0.2.0'
+$script:RoboGoVersion = '0.3.0'
 $script:RoboExe = Join-Path $env:SystemRoot 'System32\robocopy.exe'
 $script:Inv = [System.Globalization.CultureInfo]::InvariantCulture
 # Switches that would break progress tracking or keep robocopy from ever exiting.
@@ -44,7 +44,8 @@ $script:RoboLogLimits = @{ LogMaxDays = 30; LogFileMaxMB = 50; LogMaxMB = 100 }
 #    Every text the app itself shows lives in this table. A lang\<code>.json file
 #    with the same keys overrides it for that language (tools\Export-Language.ps1
 #    writes one). {0}, {1} are filled in by the code. Robocopy's own output is not
-#    translated.
+#    translated. No text may depend on a number being one or many: counts are
+#    written as "Label: number." because plural rules differ between languages.
 # ============================================================================
 
 $script:RoboText = @{
@@ -85,6 +86,12 @@ $script:RoboText = @{
     'ui.speed'         = 'SPEED'
     'ui.eta'           = 'ETA'
     'ui.took'          = 'TOOK'
+    'ui.sendTo'        = 'SEND TO'
+    'ui.showAll'       = 'SHOW ALL'
+    'ui.showLess'      = 'SHOW LESS'
+    'ui.failed'        = 'FAILED: {0}'
+    'ui.fullLog'       = 'FULL LOG'
+    'ui.clearRecent'   = 'Clear the list'
     'ui.helpSwitches'  = 'USEFUL SWITCHES'
     'ui.helpNote'      = 'Tick a switch to add it to EXTRA, untick it to remove it. Values such as 7 or *.jpg are examples: edit them in the EXTRA field.'
     'ui.helpSetups'    = 'RECOMMENDED SETUPS'
@@ -121,20 +128,29 @@ $script:RoboText = @{
     'tip.copyLog'      = 'Copy the log shown here to the clipboard.'
     'tip.openLog'      = 'Open the kept log file of the last job.'
     'tip.language'     = 'Language'
+    'tip.sendTo'       = 'Puts RoboGo into the Send to menu of Explorer: right-click a folder, Send to, RoboGo. Click again to take it out. The shortcut for that menu is the only thing RoboGo writes outside its own folder.'
+    'tip.recent'       = 'Folders of earlier jobs.'
+    'tip.tape'         = 'Show the whole command, or only its first two lines.'
+    'tip.failed'       = 'Show only what failed, or the whole log again.'
 
     # status line and log notes
     'status.ready'         = 'Ready.'
     'status.scanning'      = 'Scanning: counting what needs to be copied...'
     'status.dryRun'        = 'Dry run: listing what would happen. Nothing is changed.'
     'status.copying'       = 'Copying...'
-    'status.copyingErrors' = 'Copying... {0} error(s) so far, see the log.'
+    'status.copyingErrors' = 'Copying... Errors so far: {0}. See the log.'
     'status.stopping'      = 'Stopping...'
     'status.copied'        = 'Command copied to the clipboard.'
     'status.logCopied'     = 'Log copied to the clipboard.'
     'status.droppedFile'   = 'That was a file, so its folder was taken.'
     'status.error'         = 'Unexpected error: {0}'
     'status.settings'      = 'The setting could not be saved: the RoboGo folder is not writable.'
-    'log.scan'             = 'Scan: {0} file(s), {1} to copy.'
+    'status.sendToOn'      = 'RoboGo is now in the Send to menu of Explorer.'
+    'status.sendToOff'     = 'RoboGo was taken out of the Send to menu.'
+    'status.sendToFail'    = 'The Send to shortcut could not be changed.'
+    'status.noSpace'       = 'Not started. The job needs {0}, the destination has {1} free.'
+    'log.scan'             = 'Scan done. Files to copy: {0}. Data to copy: {1}.'
+    'log.space'            = 'Free space in the destination: {0}.'
     'log.scanNoTotals'     = 'Scan: no totals found, running without percent.'
     'log.saved'            = 'Log saved: {0}'
     'log.savedBig'         = 'This log is bigger than {0} MB, the limit for one log (LogFileMaxMB in settings.json). The next start of RoboGo removes it.'
@@ -158,13 +174,13 @@ $script:RoboText = @{
 
     # result of a job
     'verdict.cancelled'     = 'Cancelled. Files that were already copied stay in the destination.'
-    'verdict.copied'        = 'Copied {0} file(s), {1}'
-    'verdict.wouldCopy'     = 'Would copy {0} file(s), {1}'
-    'verdict.skipped'       = ', {0} skipped'
-    'verdict.failed'        = ', {0} FAILED'
-    'verdict.extrasWould'   = ', {0} extra item(s) would be deleted from the destination'
-    'verdict.extrasDeleted' = ', {0} extra item(s) deleted from the destination'
-    'verdict.extrasLeft'    = ', {0} extra item(s) in the destination left alone'
+    'verdict.copied'        = 'Files copied: {0} ({1}).'
+    'verdict.wouldCopy'     = 'Files to copy: {0} ({1}).'
+    'verdict.skipped'       = 'Skipped: {0}.'
+    'verdict.failed'        = 'FAILED: {0}.'
+    'verdict.extrasWould'   = 'Extra items that would be deleted from the destination: {0}.'
+    'verdict.extrasDeleted' = 'Extra items deleted from the destination: {0}.'
+    'verdict.extrasLeft'    = 'Extra items left alone in the destination: {0}.'
     'verdict.fatal'         = 'Fatal error (robocopy exit code {0}). The job did not run properly: check the paths and the log.'
     'verdict.errors'        = 'Finished with errors. {0} See the log for the files that failed.'
     'verdict.dry'           = 'Dry run, nothing was changed. {0}'
@@ -175,6 +191,8 @@ $script:RoboText = @{
     # dialogs
     'dialog.confirmTip'  = 'DRY RUN shows what would happen without touching anything.'
     'dialog.confirmAsk'  = 'Run it for real?'
+    'dialog.noSpace'     = 'The job needs {0}, but the destination has only {1} free.'
+    'dialog.runAnyway'   = 'Run it anyway?'
     'dialog.closing'     = 'A job is still running. Stop it and close RoboGo?'
     'dialog.pickSource'  = 'Pick the folder to copy FROM'
     'dialog.pickDest'    = 'Pick the folder to copy TO'
@@ -274,9 +292,100 @@ function ConvertTo-RoboLimit {
     return $Default
 }
 
+# What is remembered of the fields between sessions. The mode is not: every start is a
+# plain copy, so a leftover MIRROR or MOVE cannot delete anything by reflex.
+$script:RoboLastTexts = @('Source', 'Destination', 'Threads', 'Retries', 'Wait', 'ExcludeFiles', 'ExcludeDirs', 'Extra')
+$script:RoboLastFlags = @('Subfolders', 'SkipJunctions', 'OnlyNewer', 'Restartable', 'Scan')
+
+function ConvertTo-RoboJsonString {
+    # A text as a JSON string. PowerShell 5.1 and 7 escape differently, this does not.
+    param([string]$Text)
+    $out = New-Object System.Text.StringBuilder
+    [void]$out.Append('"')
+    foreach ($c in ([string]$Text).ToCharArray()) {
+        $code = [int]$c
+        if ($code -eq 34) { [void]$out.Append('\"') }
+        elseif ($code -eq 92) { [void]$out.Append('\\') }
+        elseif ($code -eq 9) { [void]$out.Append('\t') }
+        elseif ($code -eq 10) { [void]$out.Append('\n') }
+        elseif ($code -eq 13) { [void]$out.Append('\r') }
+        elseif ($code -lt 32) { [void]$out.Append('\u' + $code.ToString('x4', $script:Inv)) }
+        else { [void]$out.Append($c) }
+    }
+    [void]$out.Append('"')
+    return $out.ToString()
+}
+
+function Test-RoboNumber {
+    param($Value)
+    return (($Value -is [int]) -or ($Value -is [long]) -or ($Value -is [double]) -or ($Value -is [decimal]))
+}
+
+function ConvertTo-RoboWindowRect {
+    # The window rectangle from settings.json, or $null when it is not four numbers.
+    param($Data)
+    if (($null -eq $Data) -or ($Data.GetType().Name -ne 'PSCustomObject')) { return $null }
+    $rect = @{}
+    foreach ($key in 'Left', 'Top', 'Width', 'Height') {
+        $entry = $Data.PSObject.Properties[$key]
+        if (($null -eq $entry) -or (-not (Test-RoboNumber $entry.Value))) { return $null }
+        $rect[$key] = [double]$entry.Value
+    }
+    if (($rect.Width -lt 1) -or ($rect.Height -lt 1)) { return $null }
+    return $rect
+}
+
+function ConvertTo-RoboLastJob {
+    # The remembered fields from settings.json. Entries of the wrong type are left out.
+    param($Data)
+    if (($null -eq $Data) -or ($Data.GetType().Name -ne 'PSCustomObject')) { return $null }
+    $last = @{}
+    foreach ($key in $script:RoboLastTexts) {
+        $entry = $Data.PSObject.Properties[$key]
+        if (($null -ne $entry) -and ($entry.Value -is [string])) { $last[$key] = $entry.Value }
+    }
+    foreach ($key in $script:RoboLastFlags) {
+        $entry = $Data.PSObject.Properties[$key]
+        if (($null -ne $entry) -and ($entry.Value -is [bool])) { $last[$key] = $entry.Value }
+    }
+    return $last
+}
+
+function ConvertTo-RoboPathList {
+    # A list of recent paths from settings.json: texts only, no empty ones, at most ten.
+    param($Data)
+    $list = New-Object System.Collections.Generic.List[string]
+    foreach ($item in @($Data)) {
+        if (($item -is [string]) -and ($item.Trim() -ne '') -and ($list.Count -lt 10)) { $list.Add($item) }
+    }
+    return , $list.ToArray()
+}
+
+function Add-RoboRecent {
+    # Puts a path at the front of a recent list. The same folder is never listed twice
+    # (case and a trailing backslash do not count), and the list keeps the newest ones.
+    param([string[]]$List, [string]$Path, [int]$Max = 10)
+    $new = New-Object System.Collections.Generic.List[string]
+    $clean = ConvertTo-RoboPath $Path
+    $same = ''
+    if ($clean -ne '') {
+        $new.Add($clean)
+        $same = Get-RoboComparablePath $clean
+    }
+    foreach ($item in @($List)) {
+        if ([string]::IsNullOrEmpty($item)) { continue }
+        if (($clean -ne '') -and ((Get-RoboComparablePath $item) -eq $same)) { continue }
+        if ($new.Count -ge $Max) { break }
+        $new.Add($item)
+    }
+    return , $new.ToArray()
+}
+
 function Read-RoboSettings {
     # The saved choices, or the defaults when there is no usable settings file.
-    $settings = @{ Language = 'en'; KeepLog = $false }
+    $settings = @{ Language = 'en'; KeepLog = $false; Window = $null; Last = $null }
+    $settings.RecentSources = [string[]]@()
+    $settings.RecentDestinations = [string[]]@()
     foreach ($key in $script:RoboLogLimits.Keys) { $settings[$key] = $script:RoboLogLimits[$key] }
     $path = Get-RoboSettingsPath
     if (Test-Path -LiteralPath $path) {
@@ -287,6 +396,10 @@ function Read-RoboSettings {
             foreach ($key in $script:RoboLogLimits.Keys) {
                 if ($null -ne $data.PSObject.Properties[$key]) { $settings[$key] = ConvertTo-RoboLimit $data.$key $script:RoboLogLimits[$key] }
             }
+            if ($null -ne $data.PSObject.Properties['Window']) { $settings.Window = ConvertTo-RoboWindowRect $data.Window }
+            if ($null -ne $data.PSObject.Properties['Last']) { $settings.Last = ConvertTo-RoboLastJob $data.Last }
+            if ($null -ne $data.PSObject.Properties['RecentSources']) { $settings.RecentSources = ConvertTo-RoboPathList $data.RecentSources }
+            if ($null -ne $data.PSObject.Properties['RecentDestinations']) { $settings.RecentDestinations = ConvertTo-RoboPathList $data.RecentDestinations }
         }
         catch { }
     }
@@ -294,11 +407,13 @@ function Read-RoboSettings {
 }
 
 function Save-RoboSettings {
-    # Writes settings.json next to the program: language, Keep log file and the three log
-    # limits. Returns $false when the folder is not writable.
+    # Writes settings.json next to the program: language, Keep log file, the three log
+    # limits, and what is remembered between sessions (window rectangle, the fields of the
+    # last job, recent paths). Returns $false when the folder is not writable.
     param([hashtable]$Settings)
     $saved = $false
     try {
+        $nl = [Environment]::NewLine
         $language = ([string]$Settings.Language).Replace('\', '').Replace('"', '')
         $keep = 'false'
         if ($Settings.KeepLog) { $keep = 'true' }
@@ -311,7 +426,33 @@ function Save-RoboSettings {
             if ($Settings.ContainsKey($key)) { $value = ConvertTo-RoboLimit $Settings[$key] $value }
             $lines.Add('  "' + $key + '": ' + $value)
         }
-        $nl = [Environment]::NewLine
+        if ($Settings.ContainsKey('Window') -and ($Settings.Window -is [hashtable])) {
+            $cells = New-Object System.Collections.Generic.List[string]
+            foreach ($key in 'Left', 'Top', 'Width', 'Height') {
+                $cells.Add('"' + $key + '": ' + [string]::Format($script:Inv, '{0}', [math]::Round([double]$Settings.Window[$key], 1)))
+            }
+            $lines.Add('  "Window": { ' + ($cells -join ', ') + ' }')
+        }
+        if ($Settings.ContainsKey('Last') -and ($Settings.Last -is [hashtable])) {
+            $cells = New-Object System.Collections.Generic.List[string]
+            foreach ($key in $script:RoboLastTexts) {
+                if ($Settings.Last.ContainsKey($key)) { $cells.Add('    "' + $key + '": ' + (ConvertTo-RoboJsonString ([string]$Settings.Last[$key]))) }
+            }
+            foreach ($key in $script:RoboLastFlags) {
+                if ($Settings.Last.ContainsKey($key)) { $cells.Add('    "' + $key + '": ' + ([string][bool]$Settings.Last[$key]).ToLowerInvariant()) }
+            }
+            $lines.Add('  "Last": {' + $nl + ($cells -join (',' + $nl)) + $nl + '  }')
+        }
+        foreach ($key in 'RecentSources', 'RecentDestinations') {
+            $cells = New-Object System.Collections.Generic.List[string]
+            if ($Settings.ContainsKey($key)) {
+                foreach ($item in @($Settings[$key])) {
+                    if (-not [string]::IsNullOrEmpty($item)) { $cells.Add('    ' + (ConvertTo-RoboJsonString ([string]$item))) }
+                }
+            }
+            if ($cells.Count -eq 0) { $lines.Add('  "' + $key + '": []') }
+            else { $lines.Add('  "' + $key + '": [' + $nl + ($cells -join (',' + $nl)) + $nl + '  ]') }
+        }
         $json = '{' + $nl + ($lines -join (',' + $nl)) + $nl + '}' + $nl
         [System.IO.File]::WriteAllText((Get-RoboSettingsPath), $json, (New-Object System.Text.UTF8Encoding $false))
         $saved = $true
@@ -662,6 +803,256 @@ function Format-RoboDuration {
     return ('{0}s' -f $s)
 }
 
+function Get-RoboLauncherPath {
+    # What starts the app: RoboGo.exe once it is built, RoboGo.cmd otherwise.
+    $exe = Join-Path $script:RoboAppDir 'RoboGo.exe'
+    if (Test-Path -LiteralPath $exe) { return $exe }
+    return (Join-Path $script:RoboAppDir 'RoboGo.cmd')
+}
+
+function Get-RoboSendToPath {
+    # The shortcut that puts RoboGo into the Send to menu of Explorer. It is the only file
+    # RoboGo ever writes outside its own folder, and only when the user switches it on.
+    # ROBOGO_SENDTO names another folder; the tests use it to stay out of the real one.
+    $dir = $env:ROBOGO_SENDTO
+    if ([string]::IsNullOrEmpty($dir)) { $dir = [Environment]::GetFolderPath('SendTo') }
+    return (Join-Path $dir 'RoboGo.lnk')
+}
+
+function Test-RoboSendTo {
+    return (Test-Path -LiteralPath (Get-RoboSendToPath) -PathType Leaf)
+}
+
+function Set-RoboSendTo {
+    # Creates or removes the Send to shortcut. Returns $false when that did not work.
+    param([bool]$On)
+    try {
+        $path = Get-RoboSendToPath
+        if ($On) {
+            $dir = [System.IO.Path]::GetDirectoryName($path)
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+            $shell = New-Object -ComObject WScript.Shell
+            $link = $shell.CreateShortcut($path)
+            $link.TargetPath = Get-RoboLauncherPath
+            $link.WorkingDirectory = $script:RoboAppDir
+            $icon = Join-Path $script:RoboAppDir 'RoboGo.ico'
+            if (Test-Path -LiteralPath $icon) { $link.IconLocation = $icon + ',0' }
+            $link.Description = 'RoboGo'
+            $link.Save()
+        }
+        elseif (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Force
+        }
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Update-RoboSendTo {
+    # At start: a Send to shortcut that points somewhere else (the folder was moved, or the
+    # exe was built since) is written again. Without a shortcut nothing happens.
+    if (-not (Test-RoboSendTo)) { return }
+    try {
+        $shell = New-Object -ComObject WScript.Shell
+        if ($shell.CreateShortcut((Get-RoboSendToPath)).TargetPath -ne (Get-RoboLauncherPath)) { [void](Set-RoboSendTo $true) }
+    }
+    catch { }
+}
+
+# The Windows calls PowerShell has no cmdlet for, in one small C# type (C# 5, so that the
+# compiler of Windows PowerShell 5.1 takes it): dark title bar, free space of a folder on
+# any drive or share, flashing taskbar button, and the identity of the window on the taskbar.
+$script:RoboNativeSource = @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace RoboGo
+{
+    public static class Native
+    {
+        [DllImport("dwmapi.dll")]
+        public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetDiskFreeSpaceEx(string directory, out ulong freeForCaller, out ulong total, out ulong totalFree);
+
+        // Bytes the caller may still write below this folder, or -1.
+        public static long FreeSpace(string directory)
+        {
+            ulong free, total, totalFree;
+            if (!GetDiskFreeSpaceEx(directory, out free, out total, out totalFree)) { return -1; }
+            return free > (ulong)long.MaxValue ? long.MaxValue : (long)free;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FLASHWINFO
+        {
+            public uint cbSize;
+            public IntPtr hwnd;
+            public uint dwFlags;
+            public uint uCount;
+            public uint dwTimeout;
+        }
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool FlashWindowEx(ref FLASHWINFO info);
+
+        // Flashes the taskbar button until the window comes to the foreground.
+        public static void Flash(IntPtr hwnd)
+        {
+            FLASHWINFO info = new FLASHWINFO();
+            info.cbSize = (uint)Marshal.SizeOf(typeof(FLASHWINFO));
+            info.hwnd = hwnd;
+            info.dwFlags = 2 | 12;
+            info.uCount = uint.MaxValue;
+            info.dwTimeout = 0;
+            FlashWindowEx(ref info);
+        }
+
+        // The property store of a window holds what the taskbar needs to treat the window
+        // and a pinned RoboGo.exe as one program: an application id, and how to start it again.
+        [StructLayout(LayoutKind.Sequential, Pack = 4)]
+        private struct PROPERTYKEY
+        {
+            public Guid fmtid;
+            public uint pid;
+        }
+
+        [StructLayout(LayoutKind.Explicit, Size = 24)]
+        private struct PROPVARIANT
+        {
+            [FieldOffset(0)] public ushort vt;
+            [FieldOffset(8)] public IntPtr pointer;
+        }
+
+        [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IPropertyStore
+        {
+            [PreserveSig] int GetCount(out uint count);
+            [PreserveSig] int GetAt(uint index, out PROPERTYKEY key);
+            [PreserveSig] int GetValue(ref PROPERTYKEY key, out PROPVARIANT value);
+            [PreserveSig] int SetValue(ref PROPERTYKEY key, ref PROPVARIANT value);
+            [PreserveSig] int Commit();
+        }
+
+        [DllImport("shell32.dll")]
+        private static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
+
+        [DllImport("ole32.dll")]
+        private static extern int PropVariantClear(ref PROPVARIANT value);
+
+        // System.AppUserModel: 5 ID, 2 RelaunchCommand, 4 RelaunchDisplayNameResource, 3 RelaunchIconResource
+        private static readonly Guid AppModel = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");
+
+        private static IPropertyStore Store(IntPtr hwnd)
+        {
+            Guid iid = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+            IPropertyStore store;
+            int result = SHGetPropertyStoreForWindow(hwnd, ref iid, out store);
+            return result == 0 ? store : null;
+        }
+
+        private static void Put(IPropertyStore store, uint pid, string text)
+        {
+            PROPERTYKEY key = new PROPERTYKEY();
+            key.fmtid = AppModel;
+            key.pid = pid;
+            PROPVARIANT value = new PROPVARIANT();
+            if (text != null)
+            {
+                value.vt = 31;
+                value.pointer = Marshal.StringToCoTaskMemUni(text);
+            }
+            try { store.SetValue(ref key, ref value); }
+            finally { PropVariantClear(ref value); }
+        }
+
+        private static string Take(IPropertyStore store, uint pid)
+        {
+            PROPERTYKEY key = new PROPERTYKEY();
+            key.fmtid = AppModel;
+            key.pid = pid;
+            PROPVARIANT value;
+            if (store.GetValue(ref key, out value) != 0) { return ""; }
+            try { return value.vt == 31 ? Marshal.PtrToStringUni(value.pointer) : ""; }
+            finally { PropVariantClear(ref value); }
+        }
+
+        public static bool SetIdentity(IntPtr hwnd, string id, string command, string name, string icon)
+        {
+            IPropertyStore store = Store(hwnd);
+            if (store == null) { return false; }
+            try
+            {
+                Put(store, 2, command);
+                Put(store, 4, name);
+                Put(store, 3, icon);
+                Put(store, 5, id);
+                return store.Commit() == 0;
+            }
+            finally { Marshal.ReleaseComObject(store); }
+        }
+
+        // "id|command|name|icon" as the taskbar sees it.
+        public static string GetIdentity(IntPtr hwnd)
+        {
+            IPropertyStore store = Store(hwnd);
+            if (store == null) { return ""; }
+            try { return Take(store, 5) + "|" + Take(store, 2) + "|" + Take(store, 4) + "|" + Take(store, 3); }
+            finally { Marshal.ReleaseComObject(store); }
+        }
+
+        // Windows asks for the relaunch properties to be removed before the window goes away.
+        public static void ClearIdentity(IntPtr hwnd)
+        {
+            IPropertyStore store = Store(hwnd);
+            if (store == null) { return; }
+            try
+            {
+                Put(store, 2, null);
+                Put(store, 4, null);
+                Put(store, 3, null);
+                Put(store, 5, null);
+                store.Commit();
+            }
+            finally { Marshal.ReleaseComObject(store); }
+        }
+    }
+}
+'@
+
+function Initialize-RoboNative {
+    # Compiles the helper type once per process.
+    if ('RoboGo.Native' -as [type]) { return }
+    Add-Type -TypeDefinition $script:RoboNativeSource
+}
+
+function Get-RoboFreeSpace {
+    # Bytes the user may still write to the drive or share of a folder, or -1 when that
+    # cannot be told. The folder need not exist yet: the nearest one above it is asked.
+    param([string]$Path)
+    $p = ConvertTo-RoboPath $Path
+    if ($p -eq '') { return [long]-1 }
+    try { $p = [System.IO.Path]::GetFullPath($p) }
+    catch { return [long]-1 }
+    while (-not (Test-Path -LiteralPath $p -PathType Container)) {
+        $parent = [System.IO.Path]::GetDirectoryName($p)
+        if ([string]::IsNullOrEmpty($parent)) { return [long]-1 }
+        $p = $parent
+    }
+    try {
+        Initialize-RoboNative
+        return [long][RoboGo.Native]::FreeSpace($p.TrimEnd('\') + '\')
+    }
+    catch {
+        return [long]-1
+    }
+}
+
 # ============================================================================
 # 2. Log parser. It reads the structure of robocopy's log (tabs, digits, the
 #    percent sign, the 0x error code), never its words, so the Windows display
@@ -669,6 +1060,7 @@ function Format-RoboDuration {
 # ============================================================================
 
 $script:RxRoboError = New-Object System.Text.RegularExpressions.Regex '^\S.*\s\d+ \(0x[0-9A-Fa-f]{8}\)\s'
+$script:RxRoboFailure = New-Object System.Text.RegularExpressions.Regex '\s(\d+ \(0x[0-9A-Fa-f]{8}\))\s+(\S.*)$'
 $script:RxRoboSummary = New-Object System.Text.RegularExpressions.Regex '^\s*\S[^:]*:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$'
 
 function Split-RoboLogText {
@@ -714,6 +1106,9 @@ function New-RoboProgress {
         ExtraDirs      = 0
         Errors         = 0
         LastError      = ''
+        Failures       = (New-Object System.Collections.Generic.List[object])
+        FailureKeys    = (New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase))
+        FailurePending = $null
         CurrentFile    = ''
         SummaryRows    = (New-Object System.Collections.Generic.List[object])
         Summary        = $null
@@ -738,7 +1133,9 @@ function Update-RoboProgress {
     # Feeds log lines into the state.
     #   file line    TAB class TAB TAB size TAB path     -> a file robocopy is about to copy
     #   percent      "  6.2%" ... "100%"                 -> progress of the newest pending file
-    #   error        "date time ERROR 32 (0x00000020) "  -> counted, the file stays unfinished
+    #   error        "date time ERROR 32 (0x00000020) "  -> counted, the file stays unfinished;
+    #                                                        listed once in Failures, with the
+    #                                                        message robocopy prints on the next line
     #   summary row  "  Files :  4  4  0  0  0  1"       -> the final numbers
     # A file counts as copied only when its 100% arrives.
     param([hashtable]$State, [string[]]$Lines)
@@ -746,6 +1143,7 @@ function Update-RoboProgress {
         if ($line.Length -eq 0) { continue }
         $first = [int]$line[0]
         if ($first -eq 9) {
+            $State.FailurePending = $null
             $cells = $line.Split([char]9)
             if (($cells.Length -ge 5) -and ($cells[2].Length -eq 0)) {
                 $size = [long]0
@@ -803,6 +1201,24 @@ function Update-RoboProgress {
         if (($line.IndexOf('(0x') -gt 0) -and $script:RxRoboError.IsMatch($line)) {
             $State.Errors++
             $State.LastError = $text
+            # Retries print the same error again: every path with its code is kept once.
+            $State.FailurePending = $null
+            $m = $script:RxRoboFailure.Match($line)
+            if ($m.Success) {
+                $what = $m.Groups[2].Value.Trim()
+                $code = $m.Groups[1].Value
+                if (($State.Failures.Count -lt 2000) -and $State.FailureKeys.Add($what + '|' + $code)) {
+                    $entry = @{ What = $what; Code = $code; Detail = '' }
+                    $State.Failures.Add($entry)
+                    $State.FailurePending = $entry
+                }
+            }
+            continue
+        }
+        if ($null -ne $State.FailurePending) {
+            # the line after a new error is what Windows says about it
+            $State.FailurePending.Detail = $text
+            $State.FailurePending = $null
             continue
         }
         if (($first -eq 32) -and ($State.SummaryRows.Count -lt 3) -and ($line.IndexOf(':') -gt 0)) {
@@ -815,6 +1231,19 @@ function Update-RoboProgress {
             }
         }
     }
+}
+
+function Get-RoboFailureLines {
+    # One line per failure: what robocopy was doing with which path, the error code, and
+    # the message of Windows.
+    param([hashtable]$State)
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($failure in $State.Failures) {
+        $line = $failure.What + '   [' + $failure.Code + ']'
+        if ($failure.Detail -ne '') { $line += '   ' + $failure.Detail }
+        $lines.Add($line)
+    }
+    return , $lines.ToArray()
 }
 
 function Get-RoboDoneBytes {
@@ -834,21 +1263,22 @@ function Get-RoboVerdict {
     if ($Cancelled) {
         return @{ Level = 'warn'; Text = (Get-RoboText 'verdict.cancelled') }
     }
-    $detail = ''
+    # whole sentences, joined by a space: nothing a translator has to glue together
+    $parts = New-Object System.Collections.Generic.List[string]
     if ($Summary) {
         $key = 'verdict.copied'
         if ($DryRun) { $key = 'verdict.wouldCopy' }
-        $detail = Get-RoboText $key $Summary.Files.Copied, (Format-RoboBytes $Summary.Bytes.Copied)
-        if ($Summary.Files.Skipped -gt 0) { $detail += (Get-RoboText 'verdict.skipped' $Summary.Files.Skipped) }
-        if ($Summary.Files.Failed -gt 0) { $detail += (Get-RoboText 'verdict.failed' $Summary.Files.Failed) }
+        $parts.Add((Get-RoboText $key $Summary.Files.Copied, (Format-RoboBytes $Summary.Bytes.Copied)))
+        if ($Summary.Files.Skipped -gt 0) { $parts.Add((Get-RoboText 'verdict.skipped' $Summary.Files.Skipped)) }
+        if ($Summary.Files.Failed -gt 0) { $parts.Add((Get-RoboText 'verdict.failed' $Summary.Files.Failed)) }
         $extras = $Summary.Files.Extras + $Summary.Dirs.Extras
         if ($extras -gt 0) {
-            if ($Mirror -and $DryRun) { $detail += (Get-RoboText 'verdict.extrasWould' $extras) }
-            elseif ($Mirror) { $detail += (Get-RoboText 'verdict.extrasDeleted' $extras) }
-            else { $detail += (Get-RoboText 'verdict.extrasLeft' $extras) }
+            if ($Mirror -and $DryRun) { $parts.Add((Get-RoboText 'verdict.extrasWould' $extras)) }
+            elseif ($Mirror) { $parts.Add((Get-RoboText 'verdict.extrasDeleted' $extras)) }
+            else { $parts.Add((Get-RoboText 'verdict.extrasLeft' $extras)) }
         }
-        $detail += '.'
     }
+    $detail = ($parts -join ' ')
     if (($ExitCode -lt 0) -or ($ExitCode -ge 16)) {
         return @{ Level = 'error'; Text = (Get-RoboText 'verdict.fatal' $ExitCode) }
     }
@@ -2616,7 +3046,7 @@ function Invoke-RoboGoSelfTest {
         }
     }
     if ($failed -eq 0) { Write-Host ('RoboGo ' + $script:RoboGoVersion + ' self-test: all good') }
-    else { Write-Host ('RoboGo ' + $script:RoboGoVersion + ' self-test: ' + $failed + ' check(s) failed') }
+    else { Write-Host ('RoboGo ' + $script:RoboGoVersion + ' self-test, failed checks: ' + $failed) }
     return $failed
 }
 

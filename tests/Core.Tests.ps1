@@ -151,7 +151,9 @@ Assert-Equal 'Threads must be a number from 1 to 128.' ((Test-RoboOptions $o -Sk
 # --- texts and languages ---
 Assert-Equal 'Ready.' (Get-RoboText 'status.ready') 'text: a known key gives its English text'
 Assert-Equal 'no.such.key' (Get-RoboText 'no.such.key') 'text: an unknown key gives the key itself'
-Assert-Equal 'Scan: 3 file(s), 1.5 KB to copy.' (Get-RoboText 'log.scan' 3, '1.5 KB') 'text: values are filled in'
+Assert-Equal 'Scan done. Files to copy: 3. Data to copy: 1.5 KB.' (Get-RoboText 'log.scan' 3, '1.5 KB') 'text: values are filled in'
+Assert-Equal 'Copying... Errors so far: 2. See the log.' (Get-RoboText 'status.copyingErrors' 2) 'text: counts are written as a label and a number'
+Assert-Equal '' ((@($script:RoboText.Keys | Where-Object { $script:RoboText[$_] -match '\(s\)' }) | Sort-Object) -join ' ') 'text: no text guesses a plural with (s)'
 Assert-Equal 'en' ((Get-RoboLanguages) -join ',') 'languages: only English without a lang folder'
 $langDir = Join-Path $env:ROBOGO_HOME 'lang'
 New-Item -ItemType Directory -Force -Path $langDir | Out-Null
@@ -212,6 +214,71 @@ Assert-Equal '30|50|100' (($s.LogMaxDays, $s.LogFileMaxMB, $s.LogMaxMB) -join '|
 $s = Read-RoboSettings
 Assert-Equal '30|50|250' (($s.LogMaxDays, $s.LogFileMaxMB, $s.LogMaxMB) -join '|') 'limits: a fraction and a number above a million fall back, a valid neighbour is kept'
 Assert-True ((Get-RoboText 'log.savedBig' 50) -like '*50 MB*') 'limits: there is a text for a kept log that is above the limit'
+
+# --- settings: the JSON writer ---
+Assert-Equal '"a\\b\"c"' (ConvertTo-RoboJsonString 'a\b"c') 'json: backslash and quote are escaped'
+Assert-Equal '"x\ty\nz"' (ConvertTo-RoboJsonString ('x' + [char]9 + 'y' + [char]10 + 'z')) 'json: tab and line feed get their short form'
+Assert-Equal '"\u0001"' (ConvertTo-RoboJsonString ([string][char]1)) 'json: other control characters are written as \u'
+Assert-Equal '""' (ConvertTo-RoboJsonString $null) 'json: nothing is an empty string'
+
+# --- settings: last job, window, recent paths ---
+$odd = 'D:\Zdj' + [char]0x0119 + 'cia "2026"'
+$s = Read-RoboSettings
+Assert-True (($null -eq $s.Last) -and ($null -eq $s.Window)) 'state: no last job and no window without a file'
+Assert-Equal '0|0' ([string]$s.RecentSources.Count + '|' + [string]$s.RecentDestinations.Count) 'state: the recent lists start empty'
+$s.Last = @{ Source = $odd; Destination = '\\nas\backup\x'; Subfolders = $false; SkipJunctions = $true; OnlyNewer = $true; Restartable = $false; Threads = 'abc'; Retries = '0'; Wait = '5'; ExcludeFiles = '*.tmp; thumbs.db'; ExcludeDirs = ''; Extra = '/FFT'; Scan = $false }
+$s.Window = @{ Left = -120; Top = 40.5; Width = 900; Height = 700 }
+$s.RecentSources = @($odd, 'C:\b')
+$s.RecentDestinations = @('\\nas\backup\x')
+Assert-True (Save-RoboSettings $s) 'state: saving reports success'
+$r = Read-RoboSettings
+Assert-Equal ($odd + '|\\nas\backup\x|abc|*.tmp; thumbs.db|/FFT') (($r.Last.Source, $r.Last.Destination, $r.Last.Threads, $r.Last.ExcludeFiles, $r.Last.Extra) -join '|') 'state: the texts of the last job come back, odd characters included'
+Assert-Equal 'False|True|True|False|False' (($r.Last.Subfolders, $r.Last.SkipJunctions, $r.Last.OnlyNewer, $r.Last.Restartable, $r.Last.Scan) -join '|') 'state: and its check boxes'
+Assert-True (-not $r.Last.ContainsKey('Mode')) 'state: the mode is never part of it'
+Assert-Equal '-120|40.5|900|700' ([string]::Format($script:Inv, '{0}|{1}|{2}|{3}', $r.Window.Left, $r.Window.Top, $r.Window.Width, $r.Window.Height)) 'state: the window rectangle comes back'
+Assert-Equal ($odd + '|C:\b') ($r.RecentSources -join '|') 'state: recent sources come back in order'
+Assert-Equal '\\nas\backup\x' ($r.RecentDestinations -join '|') 'state: recent destinations too'
+Assert-Equal '7' ([string]((Get-Content -LiteralPath (Get-RoboSettingsPath) -Raw | ConvertFrom-Json).PSObject.Properties.Name | Where-Object { $_ -like 'Log*' -or $_ -in 'Language', 'KeepLog', 'Window', 'Last' }).Count) 'state: the file is valid JSON with the expected entries'
+[System.IO.File]::WriteAllText((Get-RoboSettingsPath), '{ "Window": "x", "Last": 5, "RecentSources": "C:\\a", "RecentDestinations": [ 1, "D:\\b", "" ] }', $utf8)
+$r = Read-RoboSettings
+Assert-True (($null -eq $r.Last) -and ($null -eq $r.Window)) 'state: a window or last job of the wrong kind is ignored'
+Assert-Equal 'C:\a|D:\b' (($r.RecentSources + $r.RecentDestinations) -join '|') 'state: a single text counts as a list of one, entries that are not texts are dropped'
+[System.IO.File]::WriteAllText((Get-RoboSettingsPath), '{ "Window": { "Left": 1, "Top": 2, "Width": "wide", "Height": 4 }, "Last": { "Source": 7, "Extra": "/J", "Scan": "yes" } }', $utf8)
+$r = Read-RoboSettings
+Assert-True ($null -eq $r.Window) 'state: a window with a size that is not a number is ignored'
+Assert-Equal '/J|False|False' (($r.Last.Extra, $r.Last.ContainsKey('Source'), $r.Last.ContainsKey('Scan')) -join '|') 'state: entries of the last job with the wrong type are left out one by one'
+[System.IO.File]::Delete((Get-RoboSettingsPath))
+
+# --- recent paths ---
+$list = Add-RoboRecent @() 'D:\Photos'
+$list = Add-RoboRecent $list 'E:\Music\'
+Assert-Equal 'E:\Music|D:\Photos' ($list -join '|') 'recent: the newest path comes first, written without the trailing backslash'
+$list = Add-RoboRecent $list 'd:\photos\'
+Assert-Equal 'd:\photos|E:\Music' ($list -join '|') 'recent: the same folder moves to the front instead of appearing twice'
+Assert-Equal 'd:\photos|E:\Music' ((Add-RoboRecent $list '  ') -join '|') 'recent: an empty path changes nothing'
+foreach ($i in 1..12) { $list = Add-RoboRecent $list ('C:\n' + $i) }
+Assert-Equal '10|C:\n12|C:\n3' ([string]$list.Count + '|' + $list[0] + '|' + $list[9]) 'recent: the list keeps the newest ten'
+Assert-Equal 'C:\only' ((Add-RoboRecent $null 'C:\only') -join '|') 'recent: works without a list'
+
+# --- Send to shortcut (in a folder of its own, never the real Send to folder) ---
+$env:ROBOGO_SENDTO = Join-Path $env:ROBOGO_HOME 'sendto'
+Assert-Equal (Join-Path $env:ROBOGO_SENDTO 'RoboGo.lnk') (Get-RoboSendToPath) 'send to: ROBOGO_SENDTO redirects the shortcut'
+Assert-True ((Get-RoboLauncherPath) -match '\\RoboGo\.(exe|cmd)$') 'send to: the launcher is RoboGo.exe, or RoboGo.cmd when the exe is not built'
+Assert-True (-not (Test-RoboSendTo)) 'send to: off at first'
+Update-RoboSendTo
+Assert-True (-not (Test-RoboSendTo)) 'send to: the check at start creates nothing'
+Assert-True (Set-RoboSendTo $true) 'send to: switching on reports success'
+Assert-True (Test-RoboSendTo) 'send to: the shortcut exists'
+$shell = New-Object -ComObject WScript.Shell
+Assert-Equal (Get-RoboLauncherPath) $shell.CreateShortcut((Get-RoboSendToPath)).TargetPath 'send to: it points at the launcher'
+$link = $shell.CreateShortcut((Get-RoboSendToPath))
+$link.TargetPath = Join-Path $env:SystemRoot 'notepad.exe'
+$link.Save()
+Update-RoboSendTo
+Assert-Equal (Get-RoboLauncherPath) $shell.CreateShortcut((Get-RoboSendToPath)).TargetPath 'send to: a shortcut that points elsewhere is repaired at start'
+Assert-True (Set-RoboSendTo $false) 'send to: switching off reports success'
+Assert-True (-not (Test-RoboSendTo)) 'send to: the shortcut is gone'
+$env:ROBOGO_SENDTO = $null
 
 # --- switches in the EXTRA field ---
 Assert-Equal '/J' (Switch-RoboExtraToken '' '/J') 'token: added to an empty field'

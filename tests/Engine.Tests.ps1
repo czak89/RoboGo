@@ -96,6 +96,15 @@ Limit-RoboLogs
 Assert-Equal 'fresh.log' (Get-FileNames (Get-RoboKeptLogDir)) 'cleanup: without arguments it covers the kept logs with 30 days and 50 MB per file'
 Remove-Item -LiteralPath (Join-Path (Get-RoboKeptLogDir) 'fresh.log') -Force
 
+# --- free space of a destination ---
+$tempFree = Get-RoboFreeSpace ([System.IO.Path]::GetTempPath())
+Assert-True ($tempFree -gt 0) 'free space: an existing folder reports its room'
+$deep = Join-Path ([System.IO.Path]::GetTempPath()) ('RoboGoNope-' + [guid]::NewGuid().ToString('N') + '\a\b')
+Assert-True ([math]::Abs((Get-RoboFreeSpace $deep) - $tempFree) -lt 1GB) 'free space: a folder that does not exist yet is measured at the nearest one that does'
+$unused = @('Q', 'X', 'Y', 'Z', 'W', 'V') | Where-Object { -not (Test-Path -LiteralPath ($_ + ':\')) } | Select-Object -First 1
+Assert-Equal -1 (Get-RoboFreeSpace ($unused + ':\somewhere')) 'free space: a drive that does not exist gives -1'
+Assert-Equal -1 (Get-RoboFreeSpace '') 'free space: no path gives -1'
+
 # --- the help panel only offers switches this robocopy knows ---
 $helpText = (& $script:RoboExe '/?' | Out-String)
 $unknown = @(Get-RoboHelpSwitches | Where-Object { $_.Token.StartsWith('/') } | Where-Object { $helpText -notmatch ('(?im)^\s*' + [regex]::Escape(($_.Token -split ':')[0]) + '[\s:\[]') } | ForEach-Object { $_.Token })
@@ -216,7 +225,7 @@ try {
     Assert-Equal 2 $job.State.ExtraFiles 'dry run: lists the extra files'
     Assert-Equal 1 $job.State.ExtraDirs 'dry run: lists the extra folder'
     $v = Get-RoboVerdict -ExitCode $job.ExitCode -Summary $job.State.Summary -DryRun -Mirror
-    Assert-True ($v.Text -like 'Dry run, nothing was changed.*3 extra item(s) would be deleted*') 'dry run: verdict announces the deletions'
+    Assert-True ($v.Text -like 'Dry run, nothing was changed.*Extra items that would be deleted from the destination: 3.') 'dry run: verdict announces the deletions'
     $job = Start-RoboJob $o 'Run'
     [void](Wait-RoboJob $job)
     [void](Close-RoboJobLog $job)
@@ -240,6 +249,10 @@ try {
     Assert-Equal 1 $job.State.Summary.Files.Failed 'failure: the summary reports one failed file'
     Assert-Equal 0 $job.State.CompletedFiles 'failure: the locked file is not counted as copied'
     Assert-Equal 'error' (Get-RoboVerdict -ExitCode $job.ExitCode -Summary $job.State.Summary).Level 'failure: verdict is an error'
+    Assert-Equal 1 $job.State.Failures.Count 'failure: the locked file is listed once, however often robocopy retried'
+    Assert-True ($job.State.Failures[0].What.EndsWith('\a.txt')) 'failure: the entry names the file'
+    Assert-True ($job.State.Failures[0].Code -match '^\d+ \(0x[0-9A-F]{8}\)$') 'failure: with the error code'
+    Assert-True ($job.State.Failures[0].Detail.Length -gt 5) 'failure: and the message Windows gave'
 
     # --- missing source: fatal ---
     $job = Start-RoboJob (New-TestOptions (Join-Path $root 'nope') $dst) 'Run'

@@ -266,7 +266,7 @@ try {
     Assert-Equal '100%' $ui.TxtPercent.Text 'run: ends at 100%'
     Assert-Equal 100 $ui.Bar.Value 'run: the bar is full'
     Assert-Equal '13 / 13' $ui.TxtFiles.Text 'run: file counter'
-    Assert-True ($ui.TxtStatus.Text -like 'Done. Copied 13 file(s), 6.6 MB*') 'run: verdict in the status line'
+    Assert-True ($ui.TxtStatus.Text -like 'Done. Files copied: 13 (6.6 MB).*') 'run: verdict in the status line'
     Assert-True ([object]::ReferenceEquals($ui.TxtStatus.Foreground, $ui.Window.FindResource('Ok'))) 'run: the verdict is drawn in the ok colour'
     Assert-Equal 'TOOK' $ui.LblEta.Text 'run: the ETA cell turns into the elapsed time'
     Assert-True (Test-Path -LiteralPath (Join-Path $root 'dst\sub\g.bin')) 'run: files really arrive'
@@ -285,7 +285,7 @@ try {
     Assert-Equal (Get-RoboCommandLine (Get-RoboGoOptions $ui)) $script:Clip 'copy: COPY hands the command to the clipboard'
     Assert-Equal 'Command copied to the clipboard.' $ui.TxtStatus.Text 'copy: and says so'
     Copy-RoboGoLog
-    Assert-True ($script:Clip -like '> robocopy *g.bin*== Done. Copied 13 file(s)*') 'copy log: COPY LOG hands over what the log box shows'
+    Assert-True ($script:Clip -like '> robocopy *g.bin*== Done. Files copied: 13 *') 'copy log: COPY LOG hands over what the log box shows'
     Assert-Equal 'Log copied to the clipboard.' $ui.TxtStatus.Text 'copy log: and says so'
     $script:Clip = ''
     Clear-RoboGoLog
@@ -297,7 +297,7 @@ try {
     Start-RoboGoRun -DryRun
     Assert-Equal 'DryRun' $script:RoboGo.Phase 'dry run: skips the scan'
     Step-UntilIdle
-    Assert-True ($ui.TxtStatus.Text -like 'Dry run, nothing was changed. Would copy 13 file(s)*') 'dry run: verdict'
+    Assert-True ($ui.TxtStatus.Text -like 'Dry run, nothing was changed. Files to copy: 13 *') 'dry run: verdict'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $root 'dst2'))) 'dry run: nothing is written'
     Assert-Equal '--' $ui.TxtPercent.Text 'dry run: no percent'
     Assert-Equal '13' $ui.TxtFiles.Text 'dry run: counts the files it listed'
@@ -340,7 +340,7 @@ try {
     Assert-Equal 'Run' $script:RoboGo.Phase 'no scan: goes straight to the run'
     Assert-Equal 'True' $ui.Bar.IsIndeterminate 'no scan: the bar sweeps'
     Step-UntilIdle
-    Assert-True ($ui.TxtStatus.Text -like 'Done. Copied 14 file(s)*') 'no scan: still finishes with a verdict'
+    Assert-True ($ui.TxtStatus.Text -like 'Done. Files copied: 14 *') 'no scan: still finishes with a verdict'
     Assert-Equal '100%' $ui.TxtPercent.Text 'no scan: ends at 100%'
     Assert-Equal '14' $ui.TxtFiles.Text 'no scan: file counter without a total'
     $keptLogs = @(Get-ChildItem -LiteralPath (Get-RoboKeptLogDir) -Filter '*.log' -File)
