@@ -6,3 +6,5 @@ RoboGo.exe
 # written by the app next to itself
 settings.json
 logs/
+# written by the release workflow
+RoboGo.exe.sha256

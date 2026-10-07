@@ -1,17 +1,22 @@
 @echo off
-rem Builds RoboGo.exe, the launcher that starts RoboGo.ps1 without a console window.
-rem Needs nothing but Windows: the C# compiler is part of the .NET Framework 4.x.
+rem Builds RoboGo.exe with the C# compiler that is part of the .NET Framework 4.x, so it
+rem needs nothing but Windows. The exe starts RoboGo.ps1 without a console window, and it
+rem carries the app inside itself (script, icon, languages): copied somewhere alone, it is
+rem the whole program.
 rem Usage: build.cmd      (double-click, waits for a key at the end)
 rem        build.cmd /q   (for scripts, no waiting)
-setlocal
+setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 set "RC=0"
 set "CSC=%WINDIR%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 if not exist "%CSC%" set "CSC=%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe"
 if not exist "%CSC%" goto :nocompiler
-"%CSC%" /nologo /target:winexe /optimize+ /win32icon:RoboGo.ico /reference:System.Windows.Forms.dll /out:RoboGo.exe launcher\RoboGoLauncher.cs
+rem What travels inside the exe: name on disk, then the name it is unpacked under.
+set "RES=/resource:RoboGo.ps1,RoboGo.ps1 /resource:RoboGo.ico,RoboGo.ico"
+for %%F in (lang\*.json) do set "RES=!RES! /resource:lang\%%~nxF,lang/%%~nxF"
+"%CSC%" /nologo /target:winexe /optimize+ /win32icon:RoboGo.ico /reference:System.Windows.Forms.dll %RES% /out:RoboGo.exe launcher\RoboGoLauncher.cs
 if errorlevel 1 goto :failed
-echo [OK] RoboGo.exe is built. Start RoboGo with it, or pin it to the taskbar.
+echo [OK] RoboGo.exe is built. It runs from this folder, and on its own anywhere else.
 goto :done
 
 :nocompiler

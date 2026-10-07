@@ -25,7 +25,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:RoboGoVersion = '0.3.0'
+$script:RoboGoVersion = '0.4.0'
 $script:RoboExe = Join-Path $env:SystemRoot 'System32\robocopy.exe'
 $script:Inv = [System.Globalization.CultureInfo]::InvariantCulture
 # Switches that would break progress tracking or keep robocopy from ever exiting.
@@ -36,6 +36,15 @@ $script:RoboBlockedSwitches = @('/LOG', '/UNILOG', '/NFL', '/NS', '/NC', '/NP', 
 # another folder for those; the tests use it to stay out of the real one.
 $script:RoboAppDir = $PSScriptRoot
 $script:RoboDataDir = $PSScriptRoot
+# The single-file RoboGo.exe carries the app inside itself, unpacks it to %TEMP%\RoboGo and
+# names itself in ROBOGO_EXE. Its folder is then the one for settings and logs, and the exe
+# is what the taskbar and the Send to shortcut start.
+$script:RoboLauncher = ''
+if (-not [string]::IsNullOrEmpty($env:ROBOGO_EXE)) {
+    $script:RoboLauncher = $env:ROBOGO_EXE
+    $script:RoboDataDir = [System.IO.Path]::GetDirectoryName($env:ROBOGO_EXE)
+}
+$env:ROBOGO_EXE = $null
 if (-not [string]::IsNullOrEmpty($env:ROBOGO_HOME)) { $script:RoboDataDir = $env:ROBOGO_HOME }
 $script:RoboLanguage = 'en'
 $script:RoboTextOverlay = @{}
@@ -242,21 +251,32 @@ function Get-RoboText {
     return $text
 }
 
-function Get-RoboLanguageDir {
-    return (Join-Path $script:RoboDataDir 'lang')
+function Get-RoboLanguageDirs {
+    # Where language files are looked for, the first folder that has a file wins: lang\ in
+    # the folder of settings and logs, then the languages the single-file exe brought along.
+    $dirs = New-Object System.Collections.Generic.List[string]
+    $dirs.Add((Join-Path $script:RoboDataDir 'lang'))
+    if ($script:RoboLauncher -ne '') {
+        $packed = Join-Path $script:RoboAppDir 'lang'
+        if (-not $dirs.Contains($packed)) { $dirs.Add($packed) }
+    }
+    return , $dirs.ToArray()
 }
 
 function Get-RoboLanguages {
     # English is built in. Every lang\<code>.json adds a language.
     $codes = New-Object System.Collections.Generic.List[string]
     $codes.Add('en')
-    $dir = Get-RoboLanguageDir
-    if (Test-Path -LiteralPath $dir -PathType Container) {
-        foreach ($file in (Get-ChildItem -LiteralPath $dir -Filter '*.json' -File | Sort-Object Name)) {
+    $found = New-Object System.Collections.Generic.List[string]
+    foreach ($dir in (Get-RoboLanguageDirs)) {
+        if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+        foreach ($file in (Get-ChildItem -LiteralPath $dir -Filter '*.json' -File)) {
             $code = $file.BaseName.ToLowerInvariant()
-            if (-not $codes.Contains($code)) { $codes.Add($code) }
+            if (($code -ne 'en') -and (-not $found.Contains($code))) { $found.Add($code) }
         }
     }
+    $found.Sort([System.StringComparer]::Ordinal)
+    $codes.AddRange($found)
     return , $codes.ToArray()
 }
 
@@ -267,7 +287,14 @@ function Set-RoboLanguage {
     $language = ([string]$Code).Trim().ToLowerInvariant()
     $overlay = @{}
     if (($language -ne 'en') -and ($language -ne '')) {
-        $path = Join-Path (Get-RoboLanguageDir) ($language + '.json')
+        $path = ''
+        foreach ($dir in (Get-RoboLanguageDirs)) {
+            $candidate = Join-Path $dir ($language + '.json')
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+                $path = $candidate
+                break
+            }
+        }
         try {
             $data = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             foreach ($entry in $data.PSObject.Properties) {
@@ -811,10 +838,21 @@ function Format-RoboDuration {
 }
 
 function Get-RoboLauncherPath {
-    # What starts the app: RoboGo.exe once it is built, RoboGo.cmd otherwise.
+    # What starts the app: the single-file exe that unpacked it, else RoboGo.exe next to the
+    # script once it is built, RoboGo.cmd otherwise.
+    if ($script:RoboLauncher -ne '') { return $script:RoboLauncher }
     $exe = Join-Path $script:RoboAppDir 'RoboGo.exe'
     if (Test-Path -LiteralPath $exe) { return $exe }
     return (Join-Path $script:RoboAppDir 'RoboGo.cmd')
+}
+
+function Get-RoboIconRef {
+    # The icon for the taskbar and the Send to shortcut, as "file,index". The single-file exe
+    # is its own icon: what it unpacked to TEMP may be gone by the time Explorer looks.
+    if ($script:RoboLauncher -ne '') { return ($script:RoboLauncher + ',0') }
+    $icon = Join-Path $script:RoboAppDir 'RoboGo.ico'
+    if (Test-Path -LiteralPath $icon) { return ($icon + ',0') }
+    return ''
 }
 
 function Get-RoboSendToPath {
@@ -841,9 +879,9 @@ function Set-RoboSendTo {
             $shell = New-Object -ComObject WScript.Shell
             $link = $shell.CreateShortcut($path)
             $link.TargetPath = Get-RoboLauncherPath
-            $link.WorkingDirectory = $script:RoboAppDir
-            $icon = Join-Path $script:RoboAppDir 'RoboGo.ico'
-            if (Test-Path -LiteralPath $icon) { $link.IconLocation = $icon + ',0' }
+            $link.WorkingDirectory = [System.IO.Path]::GetDirectoryName($link.TargetPath)
+            $icon = Get-RoboIconRef
+            if ($icon -ne '') { $link.IconLocation = $icon }
             $link.Description = 'RoboGo'
             $link.Save()
         }
@@ -2359,10 +2397,7 @@ function Set-RoboTaskbarIdentity {
     try {
         Initialize-RoboNative
         $handle = (New-Object System.Windows.Interop.WindowInteropHelper $Window).EnsureHandle()
-        $icon = Join-Path $script:RoboAppDir 'RoboGo.ico'
-        $iconRef = ''
-        if (Test-Path -LiteralPath $icon) { $iconRef = $icon + ',0' }
-        return [RoboGo.Native]::SetIdentity($handle, $script:RoboAppId, ('"' + (Get-RoboLauncherPath) + '"'), 'RoboGo', $iconRef)
+        return [RoboGo.Native]::SetIdentity($handle, $script:RoboAppId, ('"' + (Get-RoboLauncherPath) + '"'), 'RoboGo', (Get-RoboIconRef))
     }
     catch {
         return $false
@@ -3628,6 +3663,19 @@ function Invoke-RoboGoSelfTest {
         Write-Host ('       ' + $_.Exception.Message)
     }
     $checks.Add(@('window loads', $windowOk))
+    $nativeOk = $false
+    try {
+        Initialize-RoboNative
+        $nativeOk = [bool]('RoboGo.Native' -as [type])
+    }
+    catch {
+        Write-Host ('       ' + $_.Exception.Message)
+    }
+    $checks.Add(@('Windows helpers compile', $nativeOk))
+    [string[]]$languages = Get-RoboLanguages
+    $broken = @($languages | Where-Object { (Set-RoboLanguage $_) -ne $_ })
+    [void](Set-RoboLanguage 'en')
+    $checks.Add(@('language files load', ($broken.Count -eq 0)))
     $failed = 0
     foreach ($check in $checks) {
         if ($check[1]) { Write-Host ('[OK] ' + $check[0]) }
@@ -3636,6 +3684,10 @@ function Invoke-RoboGoSelfTest {
             $failed++
         }
     }
+    Write-Host ('     app folder:  ' + $script:RoboAppDir)
+    Write-Host ('     data folder: ' + $script:RoboDataDir)
+    Write-Host ('     launcher:    ' + (Get-RoboLauncherPath))
+    Write-Host ('     languages:   ' + ($languages -join ', '))
     if ($failed -eq 0) { Write-Host ('RoboGo ' + $script:RoboGoVersion + ' self-test: all good') }
     else { Write-Host ('RoboGo ' + $script:RoboGoVersion + ' self-test, failed checks: ' + $failed) }
     return $failed

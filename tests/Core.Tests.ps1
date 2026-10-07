@@ -170,12 +170,59 @@ Assert-Equal 'en' (Set-RoboLanguage 'bad') 'languages: a broken file falls back 
 Assert-Equal 'Ready.' (Get-RoboText 'status.ready') 'languages: and the English texts are back'
 Assert-Equal 'en' (Set-RoboLanguage 'zz') 'languages: an unknown code falls back to English'
 
-$plPath = Join-Path $PSScriptRoot '..\lang\pl.json'
-$pl = [System.IO.File]::ReadAllText($plPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
-$plKeys = @($pl.PSObject.Properties | ForEach-Object { $_.Name } | Where-Object { $_ -ne '_name' } | Sort-Object)
+# The single-file exe names itself in ROBOGO_EXE: it is the launcher and the icon, and the
+# languages it unpacked next to the script are offered besides those of the data folder.
+[System.IO.File]::WriteAllText((Join-Path $langDir 'en.json'), '{ "_name": "English", "status.ready": "Not this." }', $utf8)
+Assert-Equal 'en,bad,xx' ((Get-RoboLanguages) -join ',') 'languages: a file named en.json adds nothing, English is built in'
+Assert-True ((Get-RoboIconRef) -like '*\RoboGo.ico,0') 'icon: the icon file next to the script'
+$script:RoboLauncher = 'X:\Apps\RoboGo.exe'
+Assert-Equal 'en,bad,pl,xx' ((Get-RoboLanguages) -join ',') 'single file: the languages that came inside the exe are offered too'
+Assert-Equal 'pl' (Set-RoboLanguage 'pl') 'single file: such a language can be switched on'
+Assert-True ((Get-RoboText 'ui.run') -cne 'RUN') 'single file: and its texts are used'
+[System.IO.File]::WriteAllText((Join-Path $langDir 'pl.json'), '{ "_name": "Polski", "ui.run": "START" }', $utf8)
+[void](Set-RoboLanguage 'pl')
+Assert-Equal 'START' (Get-RoboText 'ui.run') 'single file: a language file next to the exe wins over the one inside'
+Assert-Equal 'X:\Apps\RoboGo.exe' (Get-RoboLauncherPath) 'single file: the exe is what starts the app'
+Assert-Equal 'X:\Apps\RoboGo.exe,0' (Get-RoboIconRef) 'single file: and it is its own icon'
+$script:RoboLauncher = ''
+Remove-Item -LiteralPath (Join-Path $langDir 'pl.json'), (Join-Path $langDir 'en.json') -Force
+Assert-Equal 'en' (Set-RoboLanguage 'pl') 'languages: without the exe only the data folder counts'
+
+# The language files of the repository. en.json is the reference for translators and must
+# say exactly what the app says; every other file needs the same keys and placeholders.
 $enKeys = @($script:RoboText.Keys | Sort-Object)
-Assert-Equal ($enKeys -join '|') ($plKeys -join '|') 'language file: lang\pl.json has exactly the keys of the English table'
-Assert-True ($pl.PSObject.Properties['_name'] -and ($pl._name -ne '')) 'language file: it names its language'
+$langFiles = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot '..\lang') -Filter '*.json' -File | Sort-Object Name)
+Assert-True (($langFiles | ForEach-Object { $_.Name }) -contains 'en.json') 'language files: lang\en.json is there'
+Assert-True (($langFiles | ForEach-Object { $_.Name }) -contains 'pl.json') 'language files: lang\pl.json is there'
+foreach ($langFile in $langFiles) {
+    $label = 'language file lang\' + $langFile.Name + ': '
+    $lang = $null
+    try { $lang = [System.IO.File]::ReadAllText($langFile.FullName, [System.Text.Encoding]::UTF8) | ConvertFrom-Json } catch { }
+    Assert-True ($null -ne $lang) ($label + 'it is valid JSON')
+    if ($null -eq $lang) { continue }
+    $langKeys = @($lang.PSObject.Properties | ForEach-Object { $_.Name } | Where-Object { $_ -ne '_name' } | Sort-Object)
+    Assert-Equal ($enKeys -join '|') ($langKeys -join '|') ($label + 'it has exactly the keys of the English table')
+    Assert-True ($lang.PSObject.Properties['_name'] -and ($lang._name -is [string]) -and ($lang._name -ne '')) ($label + 'it names its language')
+    $wrong = New-Object System.Collections.Generic.List[string]
+    foreach ($key in $enKeys) {
+        if (-not $lang.PSObject.Properties[$key]) { continue }
+        $english = [string]$script:RoboText[$key]
+        $value = $lang.PSObject.Properties[$key].Value
+        if (($value -isnot [string]) -or ($value.Trim() -eq '')) { $wrong.Add($key + ' (empty)'); continue }
+        if ($langFile.BaseName -eq 'en') {
+            if ($value -cne $english) { $wrong.Add($key + ' (differs from the app)') }
+            continue
+        }
+        $want = @([regex]::Matches($english, '\{\d+\}') | ForEach-Object { $_.Value } | Sort-Object -Unique) -join ''
+        $have = @([regex]::Matches($value, '\{\d+\}') | ForEach-Object { $_.Value } | Sort-Object -Unique) -join ''
+        if ($want -cne $have) { $wrong.Add($key + ' (placeholders)') }
+        # a tip that starts with a robocopy switch keeps it, with its two spaces
+        $switch = [regex]::Match($english, '^/\S+  ').Value
+        if (($switch -ne '') -and (-not $value.StartsWith($switch, [System.StringComparison]::Ordinal))) { $wrong.Add($key + ' (switch)') }
+        if ($value -cmatch '\(s\)|  $|^ | $') { $wrong.Add($key + ' (spacing or plural)') }
+    }
+    Assert-Equal '' ($wrong -join ', ') ($label + 'every text is filled in, with the placeholders and switches of the English one')
+}
 
 # --- settings ---
 Assert-Equal (Join-Path $env:ROBOGO_HOME 'settings.json') (Get-RoboSettingsPath) 'settings: the file lives in the program folder (ROBOGO_HOME here)'
