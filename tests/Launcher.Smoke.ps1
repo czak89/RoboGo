@@ -1,7 +1,9 @@
 # Smoke test for the real app. Builds RoboGo.exe when needed, starts it the way Explorer
 # does and watches for console windows while it starts. Then it drives the real window
-# through UI Automation: language button, help panel, a dry run, a copy without and with a
-# kept log. Everything the app writes goes to a throwaway ROBOGO_HOME.
+# through UI Automation: fields that survive a restart, language button, Send to toggle,
+# help panel, a dry run, a copy without and with a kept log, the recent paths, a folder
+# handed to the launcher. Everything the app writes goes to a throwaway ROBOGO_HOME, and
+# the Send to shortcut to a folder named by ROBOGO_SENDTO.
 # Windows are on screen for about twenty seconds, so this is not part of Run-Tests.ps1.
 # Leave mouse and keyboard alone while it runs: the help panel closes when another window
 # takes the focus, exactly as it should, and the test then has nothing to look at.
@@ -101,21 +103,34 @@ function Find-Control {
     return $element
 }
 function Find-Popup {
-    # An open WPF popup is a window of its own (class Popup). UI Automation lists it below
-    # the window that owns it. Returns $null when no popup is open.
-    param($Window)
-    $condition = New-Object System.Windows.Automation.PropertyCondition ([System.Windows.Automation.AutomationElement]::ClassNameProperty, 'Popup')
-    return $Window.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
+    # An open WPF popup is a window of its own. It is looked up among the visible windows
+    # of the app's process, because UI Automation does not always list it below the window
+    # that owns it (it does not while no window at all is in the foreground). ChildId names
+    # a control the wanted popup must contain, which also keeps tooltips out.
+    # $App is what Watch-Launch returned. Returns $null when that popup is not open.
+    param($App, [string]$ChildId)
+    $byId = New-Object System.Windows.Automation.PropertyCondition ([System.Windows.Automation.AutomationElement]::AutomationIdProperty, $ChildId)
+    foreach ($line in [RoboGoTest.Native]::VisibleWindows()) {
+        $field = $line -split '\|', 4
+        if (([int]$field[1] -ne $App.ProcessId) -or ([IntPtr][long]$field[0] -eq $App.Handle) -or (-not $field[2].StartsWith('HwndWrapper'))) { continue }
+        try {
+            $element = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr][long]$field[0])
+            if ($null -ne $element.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $byId)) { return $element }
+        }
+        catch { }
+    }
+    return $null
 }
-function Open-HelpPanel {
-    # Clicks ? until the panel is up. It closes as soon as another window takes the focus,
-    # which on a desktop that is in use can happen right away, so this tries a few times.
-    param($Window)
+function Open-Popup {
+    # Clicks a button until its panel is up. A panel closes as soon as another window takes
+    # the focus, which on a desktop that is in use can happen right away, so this tries a
+    # few times.
+    param($Window, $App, [string]$ButtonId, [string]$ChildId)
     foreach ($attempt in 1..3) {
-        Invoke-ControlClick $Window 'BtnHelp'
-        Wait-Until { $null -ne (Find-Popup $Window) } 2000
+        Invoke-ControlClick $Window $ButtonId
+        Wait-Until { $null -ne (Find-Popup $App $ChildId) } 2000
         Start-Sleep -Milliseconds 300
-        $popup = Find-Popup $Window
+        $popup = Find-Popup $App $ChildId
         if ($null -ne $popup) { return $popup }
     }
     return $null
@@ -233,10 +248,14 @@ $workLogs = Join-Path ([System.IO.Path]::GetTempPath()) 'RoboGo'
 # this run live in a folder of their own.
 $env:ROBOGO_HOME = Join-Path $root 'home'
 $keptLogs = Join-Path $env:ROBOGO_HOME 'logs'
+# The same goes for the Send to shortcut: a folder of this run, never the real Send to menu.
+$env:ROBOGO_SENDTO = Join-Path $root 'sendto'
+$spaced = Join-Path $root 'with space'
 $appId = 0
 
 try {
     New-Item -ItemType Directory -Force -Path $src | Out-Null
+    New-Item -ItemType Directory -Force -Path $spaced | Out-Null
     New-Item -ItemType Directory -Force -Path $keptLogs | Out-Null
     New-Item -ItemType Directory -Force -Path (Join-Path $env:ROBOGO_HOME 'lang') | Out-Null
     foreach ($i in 1..30) { [System.IO.File]::WriteAllBytes((Join-Path $src ('file' + $i + '.bin')), (New-Object byte[] 100000)) }
@@ -258,15 +277,19 @@ try {
     $control = Watch-Launch (Join-Path $env:SystemRoot 'System32\conhost.exe') 'cmd.exe /c ping -n 2 127.0.0.1' -WatchMs 2500
     Assert-True ($control.Consoles.Count -ge 1) 'watcher: a console window that is really shown is seen'
 
-    # --- for comparison: the 0.1 launcher ---
-    $old = Watch-Launch $oldLauncher -ExpectWindow
+    # --- for comparison: the 0.1 launcher. It is handed a folder, the way Send to does it ---
+    $old = Watch-Launch $oldLauncher ('"' + $src + '"') -ExpectWindow
     Write-Host ('       RoboGo.cmd: ' + $old.Consoles.Count + ' console window(s) while starting, window after ' + (Format-Seconds $old.Seconds) + ' s')
+    $oldWindow = [System.Windows.Automation.AutomationElement]::FromHandle($old.Handle)
+    Assert-Equal $src (Get-ControlValue $oldWindow 'TxtSource') 'send to: RoboGo.cmd hands a folder to the app, which puts it into FROM'
+    Set-ControlText $oldWindow 'TxtXF' '*.bak'
     [void](Close-App $old.ProcessId)
     $settingsFile = Join-Path $env:ROBOGO_HOME 'settings.json'
     Assert-True ((Test-Path -LiteralPath $settingsFile) -and ((Get-Content -LiteralPath $settingsFile -Raw) -like '*"LogMaxDays": 30,*"LogFileMaxMB": 50,*"LogMaxMB": 100*')) 'launch: the first start writes settings.json with the log limits'
 
     # --- three logs for the cleanup at the next start: too old, too big, fine ---
-    [System.IO.File]::WriteAllText($settingsFile, '{ "Language": "en", "KeepLog": false, "LogMaxDays": 30, "LogFileMaxMB": 1, "LogMaxMB": 100 }', (New-Object System.Text.UTF8Encoding $false))
+    $settingsText = [System.IO.File]::ReadAllText($settingsFile)
+    [System.IO.File]::WriteAllText($settingsFile, $settingsText.Replace('"LogFileMaxMB": 50', '"LogFileMaxMB": 1'), (New-Object System.Text.UTF8Encoding $false))
     [System.IO.File]::WriteAllText((Join-Path $keptLogs 'old.log'), 'old')
     (Get-Item -LiteralPath (Join-Path $keptLogs 'old.log')).LastWriteTime = (Get-Date).AddDays(-31)
     $big = [System.IO.File]::Create((Join-Path $keptLogs 'big.log'))
@@ -287,6 +310,20 @@ try {
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $keptLogs 'old.log'))) 'launch: a kept log older than 30 days is removed'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $keptLogs 'big.log'))) 'launch: a kept log above LogFileMaxMB from settings.json is removed'
     Assert-True (Test-Path -LiteralPath (Join-Path $keptLogs 'fresh.log')) 'launch: a small recent one stays'
+    Assert-Equal ($src + '|*.bak') ((Get-ControlValue $window 'TxtSource') + '|' + (Get-ControlValue $window 'TxtXF')) 'restore: the fields of the session before are back'
+    Set-ControlText $window 'TxtXF' ''
+
+    # --- Send to toggle ---
+    $shortcut = Join-Path $env:ROBOGO_SENDTO 'RoboGo.lnk'
+    Invoke-ControlClick $window 'BtnSendTo'
+    Wait-Until { Test-Path -LiteralPath $shortcut }
+    Assert-True (Test-Path -LiteralPath $shortcut) 'send to: the toggle creates the shortcut'
+    if (Test-Path -LiteralPath $shortcut) {
+        Assert-Equal $exe (New-Object -ComObject WScript.Shell).CreateShortcut($shortcut).TargetPath 'send to: it starts RoboGo.exe'
+    }
+    Invoke-ControlClick $window 'BtnSendTo'
+    Wait-Until { -not (Test-Path -LiteralPath $shortcut) }
+    Assert-True (-not (Test-Path -LiteralPath $shortcut)) 'send to: a second click removes it'
 
     # --- language button ---
     Assert-Equal 'EN|FROM' ((Get-ControlText $window 'BtnLang') + '|' + (Get-ControlText $window 'LblFrom')) 'live: starts in English'
@@ -299,7 +336,7 @@ try {
     Assert-Equal 'EN|FROM' ((Get-ControlText $window 'BtnLang') + '|' + (Get-ControlText $window 'LblFrom')) 'live: and back'
 
     # --- help panel ---
-    $popup = Open-HelpPanel $window
+    $popup = Open-Popup $window $new 'BtnHelp' 'help.fft'
     Assert-True ($null -ne $popup) 'help: the ? button opens the panel'
     if ($null -ne $popup) {
         $panel = $popup.Current.BoundingRectangle
@@ -317,8 +354,8 @@ try {
         Wait-Until { (Get-ControlValue $window 'TxtThreads') -eq '8' }
         Assert-Equal '8|' ((Get-ControlValue $window 'TxtThreads') + '|' + (Get-ControlValue $window 'TxtExtra')) 'help: the default setup undoes it'
         Invoke-ControlClick $window 'BtnHelp'
-        Wait-Until { $null -eq (Find-Popup $window) }
-        Assert-True ($null -eq (Find-Popup $window)) 'help: the ? button closes the panel again'
+        Wait-Until { $null -eq (Find-Popup $new 'help.fft') }
+        Assert-True ($null -eq (Find-Popup $new 'help.fft')) 'help: the ? button closes the panel again'
     }
 
     # --- the help panel with the real mouse: a second click on ? and a click elsewhere close it ---
@@ -328,13 +365,13 @@ try {
         # the app ignores a click on ? for a quarter of a second after the panel closed
         Start-Sleep -Milliseconds 500
         if (Invoke-MouseClick $window 'BtnHelp' $new.Handle) {
-            Assert-True ($null -ne (Find-Popup $window)) 'mouse: a click on ? opens the panel'
+            Assert-True ($null -ne (Find-Popup $new 'help.fft')) 'mouse: a click on ? opens the panel'
             [void](Invoke-MouseClick $window 'BtnHelp' $new.Handle)
-            Assert-True ($null -eq (Find-Popup $window)) 'mouse: a second click on ? closes it and it stays closed'
+            Assert-True ($null -eq (Find-Popup $new 'help.fft')) 'mouse: a second click on ? closes it and it stays closed'
             [void](Invoke-MouseClick $window 'BtnHelp' $new.Handle)
-            Assert-True ($null -ne (Find-Popup $window)) 'mouse: a third click opens it again'
+            Assert-True ($null -ne (Find-Popup $new 'help.fft')) 'mouse: a third click opens it again'
             [void](Invoke-MouseClick $window 'LblPaths' $new.Handle)
-            Assert-True ($null -eq (Find-Popup $window)) 'mouse: a click somewhere else in the window closes it'
+            Assert-True ($null -eq (Find-Popup $new 'help.fft')) 'mouse: a click somewhere else in the window closes it'
         }
         else {
             Write-Host '[--] mouse: skipped, another window covers the ? button'
@@ -355,19 +392,37 @@ try {
     # --- dry run: the real timer drives the job ---
     Invoke-ControlClick $window 'BtnDry'
     $status = Wait-Status $window 'Dry run, nothing was changed.*'
-    Assert-Equal 'Dry run, nothing was changed. Would copy 30 file(s), 2.9 MB.' $status 'live: the dry run finishes with its verdict'
+    Assert-Equal 'Dry run, nothing was changed. Files to copy: 30 (2.9 MB).' $status 'live: the dry run finishes with its verdict'
     Assert-True (-not (Test-Path -LiteralPath $dst)) 'live: the dry run writes nothing'
 
     # --- the real copy, scan first, log only in the window ---
     Invoke-ControlClick $window 'BtnRun'
     $status = Wait-Status $window 'Done.*'
-    Assert-Equal 'Done. Copied 30 file(s), 2.9 MB.' $status 'live: the copy finishes with its verdict'
+    Assert-Equal 'Done. Files copied: 30 (2.9 MB).' $status 'live: the copy finishes with its verdict'
     Assert-Equal '100%' (Get-ControlText $window 'TxtPercent') 'live: percent ends at 100%'
     Assert-Equal '30 / 30' (Get-ControlText $window 'TxtFiles') 'live: file counter'
     Assert-Equal 30 (@(Get-ChildItem -LiteralPath $dst -File).Count) 'live: the files really arrive'
     Assert-True ((Get-ControlValue $window 'TxtLog') -like '*file30.bin*') 'live: the log box shows the copied files'
     Assert-Equal $workLogsBefore (Get-LogCount $workLogs) 'logs: no working log is left in TEMP'
     Assert-Equal 1 (Get-LogCount $keptLogs) 'logs: nothing is kept by default'
+    Assert-True ((Get-ControlValue $window 'TxtLog') -match 'Free space in the destination: \d') 'free space: the log says how much room the destination has'
+
+    # --- recent paths: the job that just ran is in the list ---
+    Set-ControlText $window 'TxtSource' 'C:\somewhere else'
+    $recent = Open-Popup $window $new 'BtnRecentSource' 'recent.clear'
+    Assert-True ($null -ne $recent) 'recent: the arrow next to FROM opens the list'
+    if ($null -ne $recent) {
+        $list = $recent.Current.BoundingRectangle
+        $field = (Find-Control $window 'TxtSource').Current.BoundingRectangle
+        Assert-True (([math]::Abs($list.Left - $field.Left) -le 2) -and (($list.Top - $field.Bottom) -ge 0) -and (($list.Top - $field.Bottom) -le 8)) 'recent: the list hangs under its field'
+        Assert-Equal $src (Find-Control $recent 'recent.0').Current.Name 'recent: the folder of the job is its first row'
+        Invoke-ControlClick $recent 'recent.0'
+        Wait-Until { (Get-ControlValue $window 'TxtSource') -eq $src }
+        Assert-Equal $src (Get-ControlValue $window 'TxtSource') 'recent: a click on the row fills FROM'
+        Wait-Until { $null -eq (Find-Popup $new 'recent.clear') }
+        Assert-True ($null -eq (Find-Popup $new 'recent.clear')) 'recent: and closes the list'
+    }
+    Set-ControlText $window 'TxtSource' $src
 
     Save-RealWindowPng $new.Handle (Join-Path $shots 'live-window.png')
     Write-Host ('       pictures: ' + $shots + '\live-window.png, live-help.png')
@@ -383,7 +438,7 @@ try {
     # the status line still shows the verdict of the first copy, so wait for the saved log
     Wait-Until { (Get-LogCount $keptLogs) -ge 2 } 30000
     $status = Wait-Status $window 'Done.*'
-    Assert-Equal 'Done. Copied 30 file(s), 2.9 MB.' $status 'logs: the second copy finishes'
+    Assert-Equal 'Done. Files copied: 30 (2.9 MB).' $status 'logs: the second copy finishes'
     Assert-Equal 2 (Get-LogCount $keptLogs) 'logs: with Keep log file the log is saved in logs next to the program'
     Assert-Equal $workLogsBefore (Get-LogCount $workLogs) 'logs: and TEMP stays clean'
     Assert-True ((Get-ControlValue $window 'TxtLog') -like '*Log saved: *') 'logs: the log box names the saved file'
@@ -393,12 +448,17 @@ try {
     # --- closing ---
     Assert-True (Close-App $appId) 'launcher: the window closes on request'
     $appId = 0
+    $state = Get-Content -LiteralPath $settingsFile -Raw | ConvertFrom-Json
+    Assert-Equal ($src + '|' + $dst + '2') ($state.Last.Source + '|' + $state.Last.Destination) 'close: the fields are saved next to the program'
+    Assert-Equal ($src + '|' + $dst + '2|' + $dst) (($state.RecentSources -join ',') + '|' + ($state.RecentDestinations -join '|')) 'close: and so are the folders of the jobs, newest first'
+    Assert-True (($state.Window.Width -ge 700) -and ($state.Window.Height -ge 500)) 'close: and the window rectangle'
 
     # --- without PowerShell 7 on the PATH the launcher falls back to Windows PowerShell ---
     $savedPath = $env:PATH
     try {
         $env:PATH = (Join-Path $env:SystemRoot 'System32') + ';' + $env:SystemRoot
-        $plain = Watch-Launch $exe -ExpectWindow
+        # Explorer quotes a folder and may leave a backslash before the closing quote
+        $plain = Watch-Launch $exe ('"' + $spaced + '\"') -ExpectWindow
     }
     finally {
         $env:PATH = $savedPath
@@ -409,6 +469,8 @@ try {
         Assert-Equal 'powershell' (Get-Process -Id $appId).ProcessName 'fallback: hosted by Windows PowerShell 5.1'
         Assert-Equal 0 $plain.Consoles.Count 'fallback: no console window either'
         Write-Host ('       RoboGo.exe on Windows PowerShell: window after ' + (Format-Seconds $plain.Seconds) + ' s')
+        $plainWindow = [System.Windows.Automation.AutomationElement]::FromHandle($plain.Handle)
+        Assert-Equal ($spaced + '||8') (((Get-ControlValue $plainWindow 'TxtSource'), (Get-ControlValue $plainWindow 'TxtDest'), (Get-ControlValue $plainWindow 'TxtThreads')) -join '|') 'send to: RoboGo.exe hands over a folder with a space, FROM takes it, TO is emptied, the rest is remembered'
         Assert-True (Close-App $appId) 'fallback: closes on request'
         $appId = 0
     }
@@ -416,6 +478,7 @@ try {
 finally {
     if ($appId -gt 0) { [void](Close-App $appId) }
     $env:ROBOGO_HOME = $null
+    $env:ROBOGO_SENDTO = $null
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
 }
 

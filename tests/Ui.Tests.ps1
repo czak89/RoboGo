@@ -191,6 +191,11 @@ try {
     Assert-Equal $given $sent.TxtSource.Text 'send to: a file gives its folder'
     Assert-Equal 'That was a file, so its folder was taken.' $sent.TxtStatus.Text 'send to: and the status line says so'
     $script:RoboGo.Timer.Stop()
+    # "D:\" "E:\x" on a command line reaches a program as one mangled argument: D:" E:\x
+    $sent = New-RoboGoWindow
+    Initialize-RoboGoWindow $sent -Source ($given + '" C:\other')
+    Assert-Equal $given $sent.TxtSource.Text 'send to: what follows a stray quote is cut off'
+    $script:RoboGo.Timer.Stop()
     [System.IO.File]::Delete((Get-RoboSettingsPath))
 
     # --- where the window was ---

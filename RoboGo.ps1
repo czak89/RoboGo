@@ -3393,7 +3393,9 @@ function Initialize-RoboGoWindow {
     # not: it is always COPY at start. A folder handed over at start (Send to) goes into
     # FROM and empties TO, so that an old destination is not reused by accident.
     Set-RoboGoLast $UI $settings.Last
-    $given = ConvertTo-RoboPath $Source
+    # Explorer quotes what it hands over. "D:\" then reaches a program as D:" and may drag
+    # a second path along; whatever follows a stray quote is cut off.
+    $given = ConvertTo-RoboPath ((([string]$Source).Trim().Trim('"') -split '"')[0])
     $givenFile = $false
     if ($given -ne '') {
         if (Test-Path -LiteralPath $given -PathType Leaf) {

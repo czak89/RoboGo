@@ -1,5 +1,5 @@
 // RoboGo launcher. A tiny Windows program whose only job is to start RoboGo.ps1 without
-// a console window. Built by build.cmd with the C# compiler that ships with Windows
+// a console window, and to pass on a folder it was started with. Built by build.cmd with the C# compiler that ships with Windows
 // (.NET Framework 4.x), so the code stays within C# 5.
 using System;
 using System.Diagnostics;
@@ -10,8 +10,8 @@ using System.Windows.Forms;
 [assembly: AssemblyTitle("RoboGo")]
 [assembly: AssemblyProduct("RoboGo")]
 [assembly: AssemblyDescription("Starts RoboGo, a small window around robocopy.")]
-[assembly: AssemblyVersion("0.2.0.0")]
-[assembly: AssemblyFileVersion("0.2.0.0")]
+[assembly: AssemblyVersion("0.3.0.0")]
+[assembly: AssemblyFileVersion("0.3.0.0")]
 
 internal static class RoboGoLauncher
 {
@@ -33,7 +33,7 @@ internal static class RoboGoLauncher
     }
 
     [STAThread]
-    private static int Main()
+    private static int Main(string[] args)
     {
         string home = AppDomain.CurrentDomain.BaseDirectory;
         string script = Path.Combine(home, "RoboGo.ps1");
@@ -48,6 +48,10 @@ internal static class RoboGoLauncher
         info.UseShellExecute = false;
         info.CreateNoWindow = true;
         info.WorkingDirectory = home;
+        // A folder dropped on the launcher, or sent to it from Explorer's Send to menu,
+        // travels in the environment: no quoting can break it there.
+        if (args.Length > 0) { info.EnvironmentVariables["ROBOGO_SOURCE"] = args[0]; }
+        else { info.EnvironmentVariables.Remove("ROBOGO_SOURCE"); }
         try
         {
             Process.Start(info);
