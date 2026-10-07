@@ -17,7 +17,7 @@ The folder is the app. RoboGo writes only two things, both next to itself:
 
 | What | Where |
 |---|---|
-| Settings (language, Keep log file) | `settings.json` |
+| Settings (language, Keep log file, log limits) | `settings.json` |
 | Logs you chose to keep | `logs\` |
 
 While a job runs, robocopy writes a working log to `%TEMP%\RoboGo`. It is deleted when the job ends. Nothing goes to `%APPDATA%` or the registry. Move or copy the folder and everything comes along. If the folder is read-only, the app still runs and only the settings are not remembered.
@@ -70,7 +70,26 @@ Robocopy's own default is one million retries with 30 seconds between them. Robo
 - With several threads the percent is an estimate while copying. The final numbers come from robocopy's own summary.
 - The log box shows robocopy's output as it comes, the newest 5,000 lines of the job. COPY LOG puts it on the clipboard, HIDE LOG shrinks the window.
 - **Keep log file** is off by default, so a job leaves no file behind. Turn it on and the full log of every job is saved to `logs\` next to the app; OPEN LOG then opens the one of the last job.
-- At every start, logs older than 30 days are deleted from `logs\` and from `%TEMP%\RoboGo`.
+- At every start RoboGo tidies up `logs\` and `%TEMP%\RoboGo`, each folder on its own. See the next section.
+
+### Log limits
+
+Three rules, applied in this order at every start:
+
+1. Logs older than `LogMaxDays` are deleted.
+2. Logs bigger than `LogFileMaxMB` are deleted, whatever their age.
+3. While the logs that are left are bigger than `LogMaxMB` together, the oldest one is deleted.
+
+| Key in `settings.json` | Default | Limit for |
+|---|---|---|
+| `LogMaxDays` | 30 | the age of a log, in days |
+| `LogFileMaxMB` | 50 | one log |
+| `LogMaxMB` | 100 | all logs of one folder together |
+
+- `settings.json` is written at the first start. Change the numbers there while RoboGo is closed. Whole numbers from 1 to 1,000,000 count; anything else gives the default.
+- 1 MB is 1,048,576 bytes. Robocopy writes roughly 200 to 300 bytes per file, so 50 MB is a job of about 200,000 files.
+- A kept log that is bigger than `LogFileMaxMB` stays until you close RoboGo, and the log box tells you that the next start removes it. Raise the limit if you want to keep such logs.
+- A log that a program still has open is never deleted, so a second RoboGo window in the middle of a job is safe.
 
 How it works underneath: when it runs a job, RoboGo adds `/BYTES /FP /UNILOG:"<working log>"` to the command shown in the preview and reads that file as robocopy writes it. The file is the only robocopy output that keeps every character of a file name intact.
 

@@ -24,6 +24,7 @@
   "help.sl": "Copy symbolic links as links instead of the files they point to.",
   "help.xa": "Skip hidden and system files.",
   "log.saved": "Log saved: {0}",
+  "log.savedBig": "This log is bigger than {0} MB, the limit for one log (LogFileMaxMB in settings.json). The next start of RoboGo removes it.",
   "log.scan": "Scan: {0} file(s), {1} to copy.",
   "log.scanNoTotals": "Scan: no totals found, running without percent.",
   "ph.dest": "e.g. \\\\nas\\backup\\Photos",

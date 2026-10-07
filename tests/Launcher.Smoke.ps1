@@ -241,9 +241,6 @@ try {
     New-Item -ItemType Directory -Force -Path (Join-Path $env:ROBOGO_HOME 'lang') | Out-Null
     foreach ($i in 1..30) { [System.IO.File]::WriteAllBytes((Join-Path $src ('file' + $i + '.bin')), (New-Object byte[] 100000)) }
     [System.IO.File]::WriteAllText((Join-Path $env:ROBOGO_HOME 'lang\xx.json'), '{ "_name": "Test", "ui.from": "OD" }', (New-Object System.Text.UTF8Encoding $false))
-    [System.IO.File]::WriteAllText((Join-Path $keptLogs 'old.log'), 'old')
-    [System.IO.File]::WriteAllText((Join-Path $keptLogs 'fresh.log'), 'fresh')
-    (Get-Item -LiteralPath (Join-Path $keptLogs 'old.log')).LastWriteTime = (Get-Date).AddDays(-31)
     $workLogsBefore = Get-LogCount $workLogs
 
     # --- build ---
@@ -265,6 +262,17 @@ try {
     $old = Watch-Launch $oldLauncher -ExpectWindow
     Write-Host ('       RoboGo.cmd: ' + $old.Consoles.Count + ' console window(s) while starting, window after ' + (Format-Seconds $old.Seconds) + ' s')
     [void](Close-App $old.ProcessId)
+    $settingsFile = Join-Path $env:ROBOGO_HOME 'settings.json'
+    Assert-True ((Test-Path -LiteralPath $settingsFile) -and ((Get-Content -LiteralPath $settingsFile -Raw) -like '*"LogMaxDays": 30,*"LogFileMaxMB": 50,*"LogMaxMB": 100*')) 'launch: the first start writes settings.json with the log limits'
+
+    # --- three logs for the cleanup at the next start: too old, too big, fine ---
+    [System.IO.File]::WriteAllText($settingsFile, '{ "Language": "en", "KeepLog": false, "LogMaxDays": 30, "LogFileMaxMB": 1, "LogMaxMB": 100 }', (New-Object System.Text.UTF8Encoding $false))
+    [System.IO.File]::WriteAllText((Join-Path $keptLogs 'old.log'), 'old')
+    (Get-Item -LiteralPath (Join-Path $keptLogs 'old.log')).LastWriteTime = (Get-Date).AddDays(-31)
+    $big = [System.IO.File]::Create((Join-Path $keptLogs 'big.log'))
+    $big.SetLength(2 * 1048576)
+    $big.Dispose()
+    [System.IO.File]::WriteAllText((Join-Path $keptLogs 'fresh.log'), 'fresh')
 
     # --- RoboGo.exe opens the window and nothing else ---
     $new = Watch-Launch $exe -ExpectWindow
@@ -277,7 +285,8 @@ try {
     $window = [System.Windows.Automation.AutomationElement]::FromHandle($new.Handle)
     Assert-Equal 'Ready.' (Get-ControlText $window 'TxtStatus') 'live: starts idle'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $keptLogs 'old.log'))) 'launch: a kept log older than 30 days is removed'
-    Assert-True (Test-Path -LiteralPath (Join-Path $keptLogs 'fresh.log')) 'launch: a newer one stays'
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $keptLogs 'big.log'))) 'launch: a kept log above LogFileMaxMB from settings.json is removed'
+    Assert-True (Test-Path -LiteralPath (Join-Path $keptLogs 'fresh.log')) 'launch: a small recent one stays'
 
     # --- language button ---
     Assert-Equal 'EN|FROM' ((Get-ControlText $window 'BtnLang') + '|' + (Get-ControlText $window 'LblFrom')) 'live: starts in English'
@@ -377,6 +386,8 @@ try {
     Assert-Equal 'Done. Copied 30 file(s), 2.9 MB.' $status 'logs: the second copy finishes'
     Assert-Equal 2 (Get-LogCount $keptLogs) 'logs: with Keep log file the log is saved in logs next to the program'
     Assert-Equal $workLogsBefore (Get-LogCount $workLogs) 'logs: and TEMP stays clean'
+    Assert-True ((Get-ControlValue $window 'TxtLog') -like '*Log saved: *') 'logs: the log box names the saved file'
+    Assert-True ((Get-ControlValue $window 'TxtLog') -notlike '*bigger than*') 'logs: a log below the limit gets no warning'
     Assert-True ((Get-Content -LiteralPath (Join-Path $env:ROBOGO_HOME 'settings.json') -Raw) -like '*"KeepLog": true*') 'logs: the choice is saved'
 
     # --- closing ---

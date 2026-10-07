@@ -191,6 +191,28 @@ Assert-Equal 'en|False' ($s.Language + '|' + $s.KeepLog) 'settings: a broken fil
 $s = Read-RoboSettings
 Assert-Equal 'en|False' ($s.Language + '|' + $s.KeepLog) 'settings: wrong types and unknown entries are ignored'
 
+# --- settings: limits for the log cleanup ---
+[System.IO.File]::Delete((Get-RoboSettingsPath))
+$s = Read-RoboSettings
+Assert-Equal '30|50|100' (($s.LogMaxDays, $s.LogFileMaxMB, $s.LogMaxMB) -join '|') 'limits: 30 days, 50 MB per log, 100 MB per folder by default'
+$s.LogMaxDays = 7
+$s.LogFileMaxMB = 5
+$s.LogMaxMB = 20
+[void](Save-RoboSettings $s)
+$s = Read-RoboSettings
+Assert-Equal '7|5|20' (($s.LogMaxDays, $s.LogFileMaxMB, $s.LogMaxMB) -join '|') 'limits: changed values come back'
+[void](Save-RoboSettings @{ Language = 'en'; KeepLog = $false })
+$text = [System.IO.File]::ReadAllText((Get-RoboSettingsPath))
+Assert-True (($text -like '*"LogMaxDays": 30,*') -and ($text -like '*"LogFileMaxMB": 50,*') -and ($text -like '*"LogMaxMB": 100*')) 'limits: the file always lists all three, so they are easy to find'
+Assert-Equal 'en' ($text | ConvertFrom-Json).Language 'limits: and it is still valid JSON'
+[System.IO.File]::WriteAllText((Get-RoboSettingsPath), '{ "LogMaxDays": 0, "LogFileMaxMB": -3, "LogMaxMB": "big" }', $utf8)
+$s = Read-RoboSettings
+Assert-Equal '30|50|100' (($s.LogMaxDays, $s.LogFileMaxMB, $s.LogMaxMB) -join '|') 'limits: zero, a negative number and a text fall back to the defaults'
+[System.IO.File]::WriteAllText((Get-RoboSettingsPath), '{ "LogMaxDays": 1.5, "LogFileMaxMB": 2000000, "LogMaxMB": 250 }', $utf8)
+$s = Read-RoboSettings
+Assert-Equal '30|50|250' (($s.LogMaxDays, $s.LogFileMaxMB, $s.LogMaxMB) -join '|') 'limits: a fraction and a number above a million fall back, a valid neighbour is kept'
+Assert-True ((Get-RoboText 'log.savedBig' 50) -like '*50 MB*') 'limits: there is a text for a kept log that is above the limit'
+
 # --- switches in the EXTRA field ---
 Assert-Equal '/J' (Switch-RoboExtraToken '' '/J') 'token: added to an empty field'
 Assert-Equal '*.jpg /J' (Switch-RoboExtraToken '*.jpg' '/J') 'token: appended, the rest is kept'

@@ -18,30 +18,82 @@ Assert-Equal 1500 (Get-RoboSpeed $m) 'speed: bytes per second over the window'
 Add-RoboSpeedSample $m 3000 20
 Assert-Equal 0 (Get-RoboSpeed $m) 'speed: drops to zero when nothing moves'
 
-# --- log housekeeping: files older than the limit go, everything else stays ---
-function New-AgedFile {
-    param([string]$Path, [int]$DaysOld)
-    Set-Content -LiteralPath $Path -Value 'x'
+# --- log housekeeping: three rules per folder, applied in this order ---
+function New-LogFile {
+    # A file of the given size whose last write was DaysOld days ago.
+    param([string]$Path, [double]$DaysOld = 0, [int]$Bytes = 1)
+    [System.IO.File]::WriteAllBytes($Path, (New-Object byte[] $Bytes))
     (Get-Item -LiteralPath $Path).LastWriteTime = (Get-Date).AddDays(-$DaysOld)
+}
+function Get-FileNames {
+    param([string]$Dir)
+    return ((Get-ChildItem -LiteralPath $Dir | Sort-Object Name | ForEach-Object { $_.Name }) -join '|')
 }
 $logDir = Join-Path ([System.IO.Path]::GetTempPath()) ('RoboGoLogTest-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 try {
-    New-AgedFile (Join-Path $logDir 'old.log') 31
-    New-AgedFile (Join-Path $logDir 'recent.log') 29
-    New-AgedFile (Join-Path $logDir 'old.txt') 40
-    Remove-RoboOldLogs -Days 30 -Directory $logDir
-    Assert-Equal 'old.txt|recent.log' ((Get-ChildItem -LiteralPath $logDir | Sort-Object Name | ForEach-Object { $_.Name }) -join '|') 'cleanup: log files older than 30 days are deleted, other files are left alone'
+    # 1. age
+    New-LogFile (Join-Path $logDir 'old.log') 31
+    New-LogFile (Join-Path $logDir 'recent.log') 29
+    New-LogFile (Join-Path $logDir 'old.txt') 40
+    Limit-RoboLogs -Days 30 -Directory $logDir
+    Assert-Equal 'old.txt|recent.log' (Get-FileNames $logDir) 'cleanup: log files older than the limit are deleted, other files are left alone'
+    Remove-Item -Path (Join-Path $logDir '*') -Force
+
+    # 2. size of one file. 0.01 MB is 10,485 bytes.
+    New-LogFile (Join-Path $logDir 'big.log') 0 20000
+    New-LogFile (Join-Path $logDir 'small.log') 5 5000
+    New-LogFile (Join-Path $logDir 'big.txt') 0 20000
+    Limit-RoboLogs -MaxFileMB 0.01 -Directory $logDir
+    Assert-Equal 'big.txt|small.log' (Get-FileNames $logDir) 'cleanup: a log above the limit for one file is deleted whatever its age'
+    Remove-Item -Path (Join-Path $logDir '*') -Force
+
+    # 3. size of the folder: four logs of 4,000 bytes against 10,485 bytes
+    New-LogFile (Join-Path $logDir 'a.log') 4 4000
+    New-LogFile (Join-Path $logDir 'b.log') 3 4000
+    New-LogFile (Join-Path $logDir 'c.log') 2 4000
+    New-LogFile (Join-Path $logDir 'd.log') 1 4000
+    New-LogFile (Join-Path $logDir 'e.txt') 9 20000
+    Limit-RoboLogs -MaxTotalMB 0.01 -Directory $logDir
+    Assert-Equal 'c.log|d.log|e.txt' (Get-FileNames $logDir) 'cleanup: above the limit for the folder the oldest logs go until the rest fits'
+    Limit-RoboLogs -MaxTotalMB 0.01 -Directory $logDir
+    Assert-Equal 'c.log|d.log|e.txt' (Get-FileNames $logDir) 'cleanup: a folder that fits is left as it is'
+    Remove-Item -Path (Join-Path $logDir '*') -Force
+
+    # order: the oversized log goes first, so it does not push older small ones out
+    New-LogFile (Join-Path $logDir 'huge-new.log') 0 20000
+    New-LogFile (Join-Path $logDir 'older1.log') 2 4000
+    New-LogFile (Join-Path $logDir 'older2.log') 1 4000
+    Limit-RoboLogs -MaxFileMB 0.01 -MaxTotalMB 0.01 -Directory $logDir
+    Assert-Equal 'older1.log|older2.log' (Get-FileNames $logDir) 'cleanup: the limit per file is applied before the limit for the folder'
+    Remove-Item -Path (Join-Path $logDir '*') -Force
+
+    # a second RoboGo may be in the middle of a job: its working log must survive
+    New-LogFile (Join-Path $logDir 'busy.log') 0 20000
+    $writer = New-Object System.IO.FileStream((Join-Path $logDir 'busy.log'), [System.IO.FileMode]::Open, [System.IO.FileAccess]::Write, ([System.IO.FileShare]'ReadWrite, Delete'))
+    try {
+        Limit-RoboLogs -MaxFileMB 0.01 -MaxTotalMB 0.01 -Directory $logDir
+        Assert-Equal 'busy.log' (Get-FileNames $logDir) 'cleanup: a log that a program is still writing is left alone'
+    }
+    finally {
+        $writer.Dispose()
+    }
+    Limit-RoboLogs -MaxFileMB 0.01 -Directory $logDir
+    Assert-Equal '' (Get-FileNames $logDir) 'cleanup: and goes at a later start, once nothing writes to it'
 }
 finally {
     Remove-Item -LiteralPath $logDir -Recurse -Force
 }
 Assert-Equal (Join-Path $env:ROBOGO_HOME 'logs') (Get-RoboKeptLogDir) 'cleanup: kept logs live in the logs folder next to the program'
 New-Item -ItemType Directory -Force -Path (Get-RoboKeptLogDir) | Out-Null
-New-AgedFile (Join-Path (Get-RoboKeptLogDir) 'ancient.log') 45
-New-AgedFile (Join-Path (Get-RoboKeptLogDir) 'fresh.log') 2
-Remove-RoboOldLogs
-Assert-Equal 'fresh.log' ((Get-ChildItem -LiteralPath (Get-RoboKeptLogDir) | ForEach-Object { $_.Name }) -join '|') 'cleanup: without arguments it covers the kept logs, with a limit of 30 days'
+New-LogFile (Join-Path (Get-RoboKeptLogDir) 'ancient.log') 45
+New-LogFile (Join-Path (Get-RoboKeptLogDir) 'fresh.log') 2
+# 52 MB without writing 52 MB: the length is set, the content is never touched
+$huge = [System.IO.File]::Create((Join-Path (Get-RoboKeptLogDir) 'huge.log'))
+$huge.SetLength(52 * 1048576)
+$huge.Dispose()
+Limit-RoboLogs
+Assert-Equal 'fresh.log' (Get-FileNames (Get-RoboKeptLogDir)) 'cleanup: without arguments it covers the kept logs with 30 days and 50 MB per file'
 Remove-Item -LiteralPath (Join-Path (Get-RoboKeptLogDir) 'fresh.log') -Force
 
 # --- the help panel only offers switches this robocopy knows ---

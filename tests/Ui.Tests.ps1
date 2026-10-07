@@ -334,6 +334,8 @@ try {
     $ui.ChkScan.IsChecked = $false
     $ui.ChkKeepLog.IsChecked = $true
     Assert-Equal 'True' (Read-RoboSettings).KeepLog 'logs: ticking Keep log file is saved'
+    # a limit far below the size of any log, so the one that is about to be kept is "too big"
+    $script:RoboGo.Settings.LogFileMaxMB = 0.001
     Start-RoboGoRun
     Assert-Equal 'Run' $script:RoboGo.Phase 'no scan: goes straight to the run'
     Assert-Equal 'True' $ui.Bar.IsIndeterminate 'no scan: the bar sweeps'
@@ -345,6 +347,8 @@ try {
     Assert-Equal 1 $keptLogs.Count 'logs: with Keep log file on, the log lands in the logs folder next to the program'
     Assert-Equal 'Visible' $ui.BtnOpenLog.Visibility 'logs: OPEN LOG appears'
     Assert-True ($ui.TxtLog.Text.Contains($keptLogs[0].FullName)) 'logs: the log box names the saved file'
+    Assert-True ($ui.TxtLog.Text -like '*bigger than 0.001 MB*next start*') 'logs: a kept log above the limit for one file says that the next start removes it'
+    $script:RoboGo.Settings.LogFileMaxMB = 50
     Assert-Equal $workingLogsBefore (Get-WorkingLogCount) 'logs: and nothing stays in TEMP'
     Assert-Equal '' (Get-ClippedControls $ui) 'size: nothing is clipped after a job either'
 

@@ -5,6 +5,7 @@
     Start it with RoboGo.exe (run build.cmd once to create it) or with RoboGo.cmd. It needs
     nothing but Windows 10 or 11: PowerShell, WPF and robocopy are part of the system.
     Everything it writes stays in its own folder: settings.json and, when logs are kept, logs\.
+    settings.json also holds the limits for the log cleanup (LogMaxDays, LogFileMaxMB, LogMaxMB).
 .PARAMETER NoUI
     Only define the functions. The test scripts dot-source the file this way.
 .PARAMETER SelfTest
@@ -34,6 +35,9 @@ $script:RoboDataDir = $PSScriptRoot
 if (-not [string]::IsNullOrEmpty($env:ROBOGO_HOME)) { $script:RoboDataDir = $env:ROBOGO_HOME }
 $script:RoboLanguage = 'en'
 $script:RoboTextOverlay = @{}
+# Limits for the log cleanup at every start: age in days, megabytes for one log, megabytes
+# for all logs of a folder. settings.json can change them under the same names.
+$script:RoboLogLimits = @{ LogMaxDays = 30; LogFileMaxMB = 50; LogMaxMB = 100 }
 
 # ============================================================================
 # 0. Texts, languages, settings
@@ -133,6 +137,7 @@ $script:RoboText = @{
     'log.scan'             = 'Scan: {0} file(s), {1} to copy.'
     'log.scanNoTotals'     = 'Scan: no totals found, running without percent.'
     'log.saved'            = 'Log saved: {0}'
+    'log.savedBig'         = 'This log is bigger than {0} MB, the limit for one log (LogFileMaxMB in settings.json). The next start of RoboGo removes it.'
 
     # warnings for modes that delete
     'danger.mirror'    = 'Mirror deletes everything in the destination that is not in the source.'
@@ -259,15 +264,29 @@ function Get-RoboSettingsPath {
     return (Join-Path $script:RoboDataDir 'settings.json')
 }
 
+function ConvertTo-RoboLimit {
+    # A log limit as read from settings.json: a whole number from 1 to 1,000,000.
+    # Anything else gives the default.
+    param($Value, [int]$Default)
+    if (($Value -is [int]) -or ($Value -is [long]) -or ($Value -is [double]) -or ($Value -is [decimal])) {
+        if (($Value -ge 1) -and ($Value -le 1000000) -and ([math]::Floor($Value) -eq $Value)) { return [int]$Value }
+    }
+    return $Default
+}
+
 function Read-RoboSettings {
     # The saved choices, or the defaults when there is no usable settings file.
     $settings = @{ Language = 'en'; KeepLog = $false }
+    foreach ($key in $script:RoboLogLimits.Keys) { $settings[$key] = $script:RoboLogLimits[$key] }
     $path = Get-RoboSettingsPath
     if (Test-Path -LiteralPath $path) {
         try {
             $data = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
             if (($null -ne $data.PSObject.Properties['Language']) -and ($data.Language -is [string])) { $settings.Language = $data.Language }
             if (($null -ne $data.PSObject.Properties['KeepLog']) -and ($data.KeepLog -is [bool])) { $settings.KeepLog = $data.KeepLog }
+            foreach ($key in $script:RoboLogLimits.Keys) {
+                if ($null -ne $data.PSObject.Properties[$key]) { $settings[$key] = ConvertTo-RoboLimit $data.$key $script:RoboLogLimits[$key] }
+            }
         }
         catch { }
     }
@@ -275,14 +294,25 @@ function Read-RoboSettings {
 }
 
 function Save-RoboSettings {
-    # Writes settings.json next to the program. Returns $false when the folder is not writable.
+    # Writes settings.json next to the program: language, Keep log file and the three log
+    # limits. Returns $false when the folder is not writable.
     param([hashtable]$Settings)
     $saved = $false
     try {
         $language = ([string]$Settings.Language).Replace('\', '').Replace('"', '')
         $keep = 'false'
         if ($Settings.KeepLog) { $keep = 'true' }
-        $json = '{' + [Environment]::NewLine + '  "Language": "' + $language + '",' + [Environment]::NewLine + '  "KeepLog": ' + $keep + [Environment]::NewLine + '}' + [Environment]::NewLine
+        $lines = New-Object System.Collections.Generic.List[string]
+        $lines.Add('  "Language": "' + $language + '"')
+        $lines.Add('  "KeepLog": ' + $keep)
+        # the limits are always written, so they can be found and changed in the file
+        foreach ($key in 'LogMaxDays', 'LogFileMaxMB', 'LogMaxMB') {
+            $value = $script:RoboLogLimits[$key]
+            if ($Settings.ContainsKey($key)) { $value = ConvertTo-RoboLimit $Settings[$key] $value }
+            $lines.Add('  "' + $key + '": ' + $value)
+        }
+        $nl = [Environment]::NewLine
+        $json = '{' + $nl + ($lines -join (',' + $nl)) + $nl + '}' + $nl
         [System.IO.File]::WriteAllText((Get-RoboSettingsPath), $json, (New-Object System.Text.UTF8Encoding $false))
         $saved = $true
     }
@@ -843,6 +873,7 @@ function Get-RoboVerdict {
 #    piped output is OEM code page text and turns many characters into "?".
 #    The file is a working file in TEMP: Close-RoboJobLog deletes it when the
 #    job is over, or moves it next to the program when the user keeps logs.
+#    Limit-RoboLogs clears out what is too old or too big at every start.
 # ============================================================================
 
 function Get-RoboLogDir {
@@ -862,17 +893,59 @@ function Get-RoboKeptLogDir {
     return (Join-Path $script:RoboDataDir 'logs')
 }
 
-function Remove-RoboOldLogs {
-    # Deletes log files older than the limit from the working folder in TEMP and from the
-    # kept logs. CmdletBinding makes a mistyped parameter an error instead of a silent run
-    # against the default folders.
+function Test-RoboFileFree {
+    # Can the file be opened for us alone? No while any program has it open, robocopy in
+    # the middle of a job included.
+    param([string]$Path)
+    try {
+        $probe = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+        $probe.Dispose()
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Limit-RoboLogs {
+    # Housekeeping at every start, for the working folder in TEMP and for the kept logs,
+    # each folder on its own:
+    #   1. logs older than Days go,
+    #   2. logs bigger than MaxFileMB go, whatever their age,
+    #   3. while the rest is bigger than MaxTotalMB together, the oldest log goes.
+    # 1 MB is 1,048,576 bytes. A log that some program has open is never touched: another
+    # RoboGo window may be in the middle of a job and reading exactly that file.
+    # CmdletBinding makes a mistyped parameter an error instead of a silent run against the
+    # default folders.
     [CmdletBinding()]
-    param([int]$Days = 30, [string[]]$Directory = @((Get-RoboLogDir), (Get-RoboKeptLogDir)))
-    $limit = (Get-Date).AddDays(-$Days)
+    param(
+        [double]$Days = $script:RoboLogLimits.LogMaxDays,
+        [double]$MaxFileMB = $script:RoboLogLimits.LogFileMaxMB,
+        [double]$MaxTotalMB = $script:RoboLogLimits.LogMaxMB,
+        [string[]]$Directory = @((Get-RoboLogDir), (Get-RoboKeptLogDir))
+    )
+    $oldest = (Get-Date).AddDays(-$Days)
+    $fileLimit = $MaxFileMB * 1048576
+    $totalLimit = $MaxTotalMB * 1048576
     foreach ($dir in $Directory) {
         if (-not (Test-Path -LiteralPath $dir -PathType Container)) { continue }
+        $rest = New-Object System.Collections.Generic.List[object]
         foreach ($file in @(Get-ChildItem -LiteralPath $dir -Filter '*.log' -File -ErrorAction SilentlyContinue)) {
-            if ($file.LastWriteTime -lt $limit) { Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue }
+            $unwanted = (($file.LastWriteTime -lt $oldest) -or ($file.Length -gt $fileLimit))
+            if ($unwanted -and (Test-RoboFileFree $file.FullName)) {
+                Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+            }
+            else {
+                $rest.Add($file)
+            }
+        }
+        $total = [double]0
+        foreach ($file in $rest) { $total += $file.Length }
+        foreach ($file in @($rest | Sort-Object LastWriteTime)) {
+            if ($total -le $totalLimit) { break }
+            if (-not (Test-RoboFileFree $file.FullName)) { continue }
+            Remove-Item -LiteralPath $file.FullName -Force -ErrorAction SilentlyContinue
+            $total -= $file.Length
         }
     }
 }
@@ -880,7 +953,7 @@ function Remove-RoboOldLogs {
 function Close-RoboJobLog {
     # Call when a job is over. The working log in TEMP is deleted, or with -Keep moved to the
     # logs folder next to the program. Returns the path of the kept file, or '' when nothing
-    # was kept. A file that cannot be moved or deleted is left to the 30-day cleanup.
+    # was kept. A file that cannot be moved or deleted is left to the cleanup at a later start.
     param([hashtable]$Job, [switch]$Keep)
     $kept = ''
     if ($null -ne $Job.Stream) {
@@ -2185,6 +2258,12 @@ function Complete-RoboGo {
     $s.LastLog = Close-RoboJobLog $job -Keep:([bool]$s.Settings.KeepLog)
     if ($s.LastLog -ne '') {
         Add-RoboGoLog (Get-RoboText 'log.saved' $s.LastLog)
+        # It stays for this session so OPEN LOG works, but the cleanup at the next start
+        # would remove it without a word.
+        $size = [long]0
+        try { $size = (Get-Item -LiteralPath $s.LastLog).Length }
+        catch { }
+        if ($size -gt ($s.Settings.LogFileMaxMB * 1048576)) { Add-RoboGoLog (Get-RoboText 'log.savedBig' $s.Settings.LogFileMaxMB) }
         $ui.BtnOpenLog.Visibility = 'Visible'
     }
     else {
@@ -2490,8 +2569,11 @@ function Initialize-RoboGoWindow {
 }
 
 function Show-RoboGoWindow {
-    # Old logs go first: anything older than 30 days in TEMP and in the logs folder.
-    try { Remove-RoboOldLogs }
+    # First start: write settings.json, so the log limits in it can be found and changed.
+    $settings = Read-RoboSettings
+    if (-not (Test-Path -LiteralPath (Get-RoboSettingsPath))) { [void](Save-RoboSettings $settings) }
+    # Then the cleanup: logs that are too old or too big go, in TEMP and in the logs folder.
+    try { Limit-RoboLogs -Days $settings.LogMaxDays -MaxFileMB $settings.LogFileMaxMB -MaxTotalMB $settings.LogMaxMB }
     catch { }
     $ui = New-RoboGoWindow
     Initialize-RoboGoWindow $ui
