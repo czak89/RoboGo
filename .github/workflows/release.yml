@@ -1,0 +1,140 @@
+# Tests RoboGo, builds the single-file RoboGo.exe on a clean Windows machine, signs it when
+# the repository has a certificate, and attaches it to the GitHub Release of a version tag.
+#
+#   git tag v0.4.0 && git push origin v0.4.0    publishes release v0.4.0
+#
+# The tag must match the version in RoboGo.ps1. Pushes to main, pull requests and manual
+# runs do everything except publishing; their exe is kept as a build artifact.
+#
+# Signing (optional). Repository secrets, Settings > Secrets and variables > Actions:
+#   SIGN_PFX_BASE64     the code-signing certificate, a .pfx file as Base64
+#   SIGN_PFX_PASSWORD   its password
+# Repository variable, optional:
+#   SIGN_TIMESTAMP_URL  timestamp server, default http://timestamp.digicert.com
+# Without the secrets the exe is built unsigned and the run says so in a warning.
+name: Build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Test, build, sign
+    runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Read the version
+        id: version
+        shell: pwsh
+        run: |
+          $match = [regex]::Match((Get-Content -Raw RoboGo.ps1), "RoboGoVersion = '(\d+\.\d+\.\d+)'")
+          if (-not $match.Success) { throw 'RoboGo.ps1 has no version.' }
+          $version = $match.Groups[1].Value
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "RoboGo $version"
+          if (($env:GITHUB_REF_TYPE -eq 'tag') -and ($env:GITHUB_REF_NAME -ne "v$version")) {
+            throw "Tag $env:GITHUB_REF_NAME does not match version $version in RoboGo.ps1. Expected v$version."
+          }
+
+      - name: Tests on Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          & .\tests\Run-Tests.ps1
+          exit $LASTEXITCODE
+
+      - name: Tests on PowerShell 7
+        shell: pwsh
+        run: |
+          & .\tests\Run-Tests.ps1
+          exit $LASTEXITCODE
+
+      - name: Build RoboGo.exe
+        shell: cmd
+        run: call build.cmd /q
+
+      # Secrets reach this step only for a version tag or a manual run, never for a pull request.
+      - name: Sign RoboGo.exe
+        if: github.ref_type == 'tag' || github.event_name == 'workflow_dispatch'
+        shell: powershell
+        env:
+          SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
+          SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
+          SIGN_TIMESTAMP_URL: ${{ vars.SIGN_TIMESTAMP_URL }}
+        run: |
+          & .\tools\Sign-RoboGo.ps1 -Path .\RoboGo.exe
+          exit $LASTEXITCODE
+
+      - name: Check the finished exe on its own
+        shell: pwsh
+        env:
+          ROBOGO_SENDTO: ${{ runner.temp }}\sendto
+        run: |
+          $alone = Join-Path $env:RUNNER_TEMP 'alone'
+          New-Item -ItemType Directory -Force -Path $alone | Out-Null
+          Copy-Item -LiteralPath .\RoboGo.exe -Destination $alone
+          $out = Join-Path $env:RUNNER_TEMP 'selftest.txt'
+          $run = Start-Process -FilePath (Join-Path $alone 'RoboGo.exe') -ArgumentList '/selftest' -WorkingDirectory $alone -Wait -PassThru -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+          Get-Content -LiteralPath $out, "$out.err"
+          if ($run.ExitCode -ne 0) { throw "The self-test of the finished exe failed with exit code $($run.ExitCode)." }
+          $signature = Get-AuthenticodeSignature -LiteralPath .\RoboGo.exe
+          $hash = (Get-FileHash -LiteralPath .\RoboGo.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  RoboGo.exe" | Set-Content -LiteralPath .\RoboGo.exe.sha256 -Encoding ascii
+          $size = [math]::Round((Get-Item -LiteralPath .\RoboGo.exe).Length / 1KB)
+          "### RoboGo ${{ steps.version.outputs.version }}" >> $env:GITHUB_STEP_SUMMARY
+          "- File: ``RoboGo.exe``, $size KB" >> $env:GITHUB_STEP_SUMMARY
+          "- SHA-256: ``$hash``" >> $env:GITHUB_STEP_SUMMARY
+          "- Signature: $($signature.Status)" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Keep the exe as a build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: RoboGo-${{ steps.version.outputs.version }}
+          path: |
+            RoboGo.exe
+            RoboGo.exe.sha256
+          if-no-files-found: error
+
+  release:
+    name: Publish the release
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch the exe
+        uses: actions/download-artifact@v8
+        with:
+          name: RoboGo-${{ needs.build.outputs.version }}
+          path: dist
+
+      - name: Attach it to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -l dist
+          (cd dist && sha256sum --check RoboGo.exe.sha256)
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" dist/RoboGo.exe dist/RoboGo.exe.sha256 --clobber
+          else
+            gh release create "$TAG" dist/RoboGo.exe dist/RoboGo.exe.sha256 --title "RoboGo ${TAG#v}" --generate-notes --verify-tag
+          fi
